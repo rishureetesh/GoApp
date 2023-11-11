@@ -1,0 +1,39 @@
+version: '3'
+
+services:
+  api:
+    container_name: backend
+    build: .
+    ports:
+      - 8000:8000
+    env_file:
+      - .env
+    depends_on:
+      - db
+    volumes:
+      - .:/app
+    networks:
+      - goapp
+  db:
+    container_name: backend-db
+    image: mongo:latest
+    env_file:
+      - .env
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=goapp
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=password
+    command:
+      mongod --quiet --logpath /dev/null
+    volumes:
+      - data:/data/db
+    networks:
+      - goapp
+
+volumes:
+  data:
+
+networks:
+  goapp:
