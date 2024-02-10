@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from src.utils.auth import get_utc_timestamp
 
 from typing import Optional
@@ -21,7 +23,7 @@ class User(BaseModel):
     name: Optional[str]
     thumbURL: Optional[str]
     photoURL: Optional[str]
-    birthDay: Optional[str]
+    birthDay: Optional[datetime]
     gender: Optional[str]
     phone: Optional[str]
     email_verified: Optional[bool]

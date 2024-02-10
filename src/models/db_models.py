@@ -83,7 +83,7 @@ class UserBase(BaseModel):
     name: str
     thumbURL: Optional[str]
     photoURL: Optional[str]
-    birthDay: Optional[str]
+    birthDay: Optional[datetime]
     gender: str
     phone: str
     email_verified: bool = False

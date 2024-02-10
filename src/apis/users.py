@@ -40,9 +40,23 @@ class UpdateUser(BaseModel):
 
 @router.get("/users/all", response_model=List[UserDisplay], tags=["users"], dependencies=[Depends(JWTRequired), Depends(SuperAdminAccess)])
 async def read_all_users(requestor: UserInDb = Depends(validate_jwt_token)):
-    # users = await prisma.user.find_many(where={"id": {"not": {"equals": requestor.id}}})
-    users = SingleDataReader("User", {"_id": {"$ne": requestor.id}})
-    return [UserDisplay(**user.dict()) for user in users]
+    pipeline = [
+        {
+            "$match": {
+                "id":
+                    {
+                        "$ne": requestor.id
+                    }
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        }
+    ]
+    users = DataAggregation("User", pipeline)
+    return [UserDisplay(**user) for user in users]
 
 
 @router.get("/users/org/{org_id}", response_model=List[UserDisplay], tags=["users"], dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
@@ -54,23 +68,32 @@ async def read_users_by_org(
             detail="Requestor not of the same Organization",
             status_code=HTTP_400_BAD_REQUEST,
         )
-    # users = await prisma.user.find_many(
-    #     where={"id": {"not": {"equals": requestor.id}}, "orgId": org_id}
-    # )
-    users = SingleDataReader("User", {"_id": {"$ne": requestor.id}, "orgId": org_id})
-    return [UserDisplay(**user.dict()) for user in users]
+    pipeline = [
+        {
+            "$match": {
+                "id":
+                    {
+                        "$ne": requestor.id
+                    },
+                "orgId": org_id
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        }
+    ]
+    users = DataAggregation("User", pipeline)
+    return [UserDisplay(**user) for user in users]
 
 
 @router.get("/users/me", response_model=UserDisplay, tags=["users"], dependencies=[Depends(JWTRequired), Depends(OrgStaffAccess)])
 async def read_user_me(requestor: UserInDb = Depends(validate_jwt_token)):
-    # user = await prisma.user.find_unique(
-    #     where={"id": requestor.id},
-    #     include={"organization": {"include": {"accounts": True}}},
-    # )
     pipeline = [
         {
             "$match": {
-                "slug": requestor.id
+                "id": requestor.id
             }
         },
         {
@@ -90,11 +113,14 @@ async def read_user_me(requestor: UserInDb = Depends(validate_jwt_token)):
             }
         },
         {
+            "$unwind": "$organization"
+        },
+        {
             "$unset": ["organization._id", "accounts._id"]
         }
     ]
     user = DataAggregation("User", pipeline)
-    return UserDisplay(**user.dict())
+    return UserDisplay(**user[0])
 
 
 @router.post("/users/me", response_model=UserDisplay, tags=["users"], dependencies=[Depends(JWTRequired), Depends(OrgStaffAccess)])
@@ -102,7 +128,6 @@ async def update_user_me(
         update_info: UserUpdateSelf, requestor: UserInDb = Depends(validate_jwt_token)
 ):
     if update_info.email and requestor.email != update_info.email:
-        # existing_user = await prisma.user.find_first(where={"email": update_info.email})
         existing_user = SingleDataReader("User", {"email": update_info.email})
         if existing_user:
             raise HTTPException(
@@ -111,7 +136,6 @@ async def update_user_me(
             )
 
     if update_info.phone and requestor.phone != update_info.phone:
-        # existing_user = await prisma.user.find_first(where={"phone": update_info.phone})
         existing_user = SingleDataReader("User", {"phone": update_info.phone})
         if existing_user:
             raise HTTPException(
@@ -141,7 +165,7 @@ async def update_user_me(
         "thumbURL": requestor.thumbURL,
         "photoURL": requestor.photoURL,
         "birthDay": requestor.birthDay.isoformat(),
-        "gender": requestor.gender.value,
+        "gender": requestor.gender,
         "phone": requestor.phone,
     }
 
@@ -158,45 +182,58 @@ async def update_user_me(
     if json.dumps(prev_data) != json.dumps(update_data):
         update_data = update_info.dict()
         update_data["gender"] = update_data["gender"].value
-        # updated_user = await prisma.user.update(
-        #     where={"id": requestor.id}, data=update_data
-        # )
-        updated_user = UpdateWriter("User", {"id": requestor.id}, update_data)
-    # updated_user = await prisma.user.find_unique(
-    #     where={"id": requestor.id}, include={"organization": True}
-    # )
+        UpdateWriter("User", {"id": requestor.id}, {**update_data, **UpdatedAt().dict()})
 
     pipeline = [
         {
             "$match": {
-                "slug": requestor.id
+                "id": requestor.id
             }
         },
         {
             "$lookup": {
-                "from": "Organizations",
-                "localField": "organizationId",
+                "from": "Organization",
+                "localField": "orgId",
                 "foreignField": "id",
                 "as": "organization"
             }
+        },
+        {
+            "$unwind": "$organization"
+        },
+        {
+            "$unset": ["organization._id"]
         }
     ]
     updated_user = DataAggregation("User", pipeline)
 
-    return UserDisplay(**updated_user.dict())
+    return UserDisplay(**updated_user[0])
 
 
-@router.get("/users", response_model=List[UserDisplay], tags=["users"], dependencies=[Depends(JWTRequired), Depends(SuperAdminAccess)])
+@router.get("/users", response_model=List[UserDisplay], tags=["users"], dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def read_users(requestor: UserInDb = Depends(validate_jwt_token)):
     if not requestor.orgId:
         raise HTTPException(
             detail="User does not have associated Organization",
             status_code=HTTP_400_BAD_REQUEST,
         )
-    # users = await prisma.user.find_many(
-    #     where={"id": {"not": {"equals": requestor.id}}, "orgId": requestor.orgId}
-    # )
-    users = DataAggregation("User", {"_id": {"$ne": requestor.id}, "orgId": requestor.orgId})
+    pipeline = [
+        {
+            "$match": {
+                "id":
+                    {
+                        "$ne": requestor.id
+                    },
+                "orgId": requestor.orgId
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        }
+    ]
+    users = DataAggregation("User", pipeline)
     return [UserDisplay(**user) for user in users]
 
 
@@ -204,18 +241,12 @@ async def read_users(requestor: UserInDb = Depends(validate_jwt_token)):
 async def create_user_app(
         user_info: UserCreate, requestor: UserInDb = Depends(validate_jwt_token)
 ):
-    # existing_user_with_email = await prisma.user.find_first(
-    #     where={"email": user_info.email}
-    # )
     existing_user_with_email = SingleDataReader("User", {"email": user_info.email})
     if existing_user_with_email:
         raise HTTPException(
             detail="The email is already taken. Cannot use this email.",
             status_code=HTTP_400_BAD_REQUEST,
         )
-    # existing_user_with_phone = await prisma.user.find_first(
-    #     where={"phone": user_info.phone}
-    # )
     existing_user_with_phone = SingleDataReader("User", {"phone": user_info.phone})
     if existing_user_with_phone:
         raise HTTPException(
@@ -224,12 +255,8 @@ async def create_user_app(
         )
     user_info.password = encryptPassword(user_info.password)
     user_data = user_info.dict()
-    user_data["gender"] = user_data["gender"].value
-    # created_user = await prisma.user.create(
-    #     data=user_data, include={"organization": True}
-    # )
     user_data = User(**user_data)
-    DataWriter("User", **user_data.dict())
+    DataWriter("User", {**user_data.dict()})
     pipeline = [
         {
             "$match": {
@@ -243,6 +270,9 @@ async def create_user_app(
                 "foreignField": "id",
                 "as": "organization"
             }
+        },
+        {
+            "$unwind": "$organization"
         },
         {
             "$unset": ["organization._id"]
@@ -257,18 +287,12 @@ async def create_user_org(
         user_info: UserCreate, requestor: UserInDb = Depends(validate_jwt_token)
 ):
     user_info.orgId = requestor.orgId
-    # existing_user_with_email = await prisma.user.find_first(
-    #     where={"email": user_info.email}
-    # )
     existing_user_with_email = SingleDataReader("User", {"email": user_info.email})
     if existing_user_with_email:
         raise HTTPException(
             detail="The email is already taken. Cannot use this email.",
             status_code=HTTP_400_BAD_REQUEST,
         )
-    # existing_user_with_phone = await prisma.user.find_first(
-    #     where={"phone": user_info.phone}
-    # )
     existing_user_with_phone = SingleDataReader("User", {"phone": user_info.phone})
     if existing_user_with_phone:
         raise HTTPException(
@@ -277,10 +301,7 @@ async def create_user_org(
         )
     user_info.password = encryptPassword(user_info.password)
     user_data = User(**user_info.dict())
-    # created_user = await prisma.user.create(
-    #     data=user_data, include={"organization": True}
-    # )
-    DataWriter("User", **user_data.dict())
+    DataWriter("User", {**user_data.dict()})
     pipeline = [
         {
             "$match": {
@@ -296,6 +317,9 @@ async def create_user_org(
             }
         },
         {
+            "$unwind": "$organization"
+        },
+        {
             "$unset": ["organization._id"]
         }
     ]
@@ -307,9 +331,6 @@ async def create_user_org(
 async def read_user(
         userId: str, requestor: UserInDb = Depends(validate_jwt_token)
 ):
-    # user = await prisma.user.find_unique(
-    #     where={"id": userId}, include={"organization": True}
-    # )
     pipeline = [
         {
             "$match": {
@@ -325,6 +346,9 @@ async def read_user(
             }
         },
         {
+            "$unwind": "$organization"
+        },
+        {
             "$unset": ["organization._id"]
         }
     ]
@@ -334,7 +358,7 @@ async def read_user(
             detail="Invalid User ID",
             status_code=HTTP_400_BAD_REQUEST,
         )
-    return UserDisplay(user[0])
+    return UserDisplay(**user[0])
 
 
 @router.post("/users/{user_id}", tags=["users"], dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
@@ -343,9 +367,6 @@ async def update_user(
         update_info: UpdateUser,
         requestor: UserInDb = Depends(validate_jwt_token),
 ):
-    # user = await prisma.user.find_unique(
-    #     where={"id": user_id}, include={"organization": True}
-    # )
     pipeline = [
         {
             "$match": {
@@ -365,7 +386,7 @@ async def update_user(
         }
     ]
     user = DataAggregation("User", pipeline)
-    user = User(**user)
+    user = User(**user[0])
     if not user:
         raise HTTPException(
             detail="Invalid User ID",
@@ -379,7 +400,6 @@ async def update_user(
         )
 
     if update_info.email and user.email != update_info.email:
-        # existing_user = await prisma.user.find_first(where={"email": update_info.email})
         existing_user = SingleDataReader("User", {"email": update_info.email})
         if existing_user:
             raise HTTPException(
@@ -388,7 +408,6 @@ async def update_user(
             )
 
     if update_info.phone and user.phone != update_info.phone:
-        # existing_user = await prisma.user.find_first(where={"phone": update_info.phone})
         existing_user = SingleDataReader("User", {"email": update_info.phone})
         if existing_user:
             raise HTTPException(
@@ -421,12 +440,8 @@ async def update_user(
     }
 
     if json.dumps(prev_data) != json.dumps(update_info.dict()):
-        # await prisma.user.update(where={"id": user.id}, data=update_info.dict())
         UpdateWriter("User", {"id": user.id}, {**update_info.dict(), **UpdatedAt().dict()})
 
-    # updated_user = await prisma.user.find_unique(
-    #     where={"id": user_id}, include={"organization": True}
-    # )
     pipeline = [
         {
             "$match": {
@@ -442,17 +457,19 @@ async def update_user(
             }
         },
         {
+            "$unwind": "$organization"
+        },
+        {
             "$unset": ["organization._id"]
         }
     ]
     updated_user = DataAggregation("User", pipeline)
     del updated_user[0]["password"]
-    return updated_user
+    return updated_user[0]
 
 
 @router.delete("/users/{user_id}", tags=["users"], dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def delete_user(user_id: str, requestor: UserInDb = Depends(validate_jwt_token)):
-    # user = await prisma.user.find_unique(where={"id": user_id})
     user = SingleDataReader("User", {"id": user_id})
     user = User(**user)
 
@@ -467,6 +484,5 @@ async def delete_user(user_id: str, requestor: UserInDb = Depends(validate_jwt_t
             detail="Cannot delete self",
             status_code=HTTP_400_BAD_REQUEST,
         )
-    # await prisma.user.delete(where={"id": user.id})
     DeleteData("User", {"id": user.id})
     return {"status": "acknowledged"}
