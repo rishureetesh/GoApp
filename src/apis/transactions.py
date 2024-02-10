@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException
 from starlette.status import HTTP_400_BAD_REQUEST
 from src.config.database import DataAggregation, DataWriter, MultiDataReader, SingleDataReader, UpdateWriter
+from src.models.models import PaymentDB, Transaction, ExpenseDB
 
 # from src.prisma import prisma
 from src.models.scalar import TransactionType
@@ -18,7 +19,7 @@ from src.models.db_models import (
     PaymentInDb,
     ExpenseInDb,
 )
-from src.utils.permissions import validate_jwt_token
+from src.utils.permissions import validate_jwt_token, JWTRequired, OrgAdminAccess
 from src.utils.storage import write_to_blob, read_blob
 
 router = APIRouter()
@@ -57,106 +58,152 @@ class RecordTransaction(BaseModel):
     exchangeRate: float
 
 
-@router.get("/transactions", tags=["transactions"])
+@router.get("/transactions", tags=["transactions"], dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def get_transactions(requestor=Depends(validate_jwt_token)):
-    # transactions = await prisma.transaction.find_many(
-    #     where={"account": {"organization": {"id": requestor.orgId}}},
-    #     include={
-    #         "account": {
-    #             "include": {"organization": {"include": {"defaultCurrency": True}}}
-    #         },
-    #         "payment": {"include": {"currency": True}},
-    #         "expense": {"include": {"currency": True}},
-    #     },
-    #     order={"createdAt": "desc"},
-    # )
-
     pipeline = [
         {
-            "$match": {
-                "account.organization.id": requestor.orgId
-            }
-        },
-        {
             "$lookup": {
-                "from": "Accounts",
+                "from": "AccountInfo",
                 "localField": "accountId",
                 "foreignField": "id",
                 "as": "account"
             }
         },
         {
+            "$unwind": "$account"
+        },
+        {
             "$lookup": {
-                "from": "Organizations",
-                "localField": "Account.orgId",
+                "from": "Organization",
+                "localField": "account.orgId",
                 "foreignField": "id",
                 "as": "organization"
             }
         },
         {
-            "$lookup": {
-                "from": "Currencies",
-                "localField": "Account.Organization.defaultCurrencyId",
-                "foreignField": "id",
-                "as": "defaultCurrency"
+            "$unwind": "$organization"
+        },
+        {
+            "$match": {
+                "organization.id": requestor.orgId
             }
         },
         {
             "$lookup": {
-                "from": "currencies",
-                "localField": "Payment.currencyId",
+                "from": "Currency",
+                "localField": "organization.defaultCurrencyId",
                 "foreignField": "id",
-                "as": "payment.currency"
+                "as": "currency"
+            }
+        },
+        {
+            "$unwind": "$currency"
+        },
+        {
+            "$lookup": {
+                "from": "Payment",
+                "localField": "paymentId",
+                "foreignField": "id",
+                "as": "payment"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$payment",
+                "preserveNullAndEmptyArrays": True
+            }
+
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "payment.currencyId",
+                "foreignField": "id",
+                "as": "paymentCurrency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$paymentCurrency",
+                "preserveNullAndEmptyArrays": True
+            }
+
+        },
+        {
+            "$lookup": {
+                "from": "Expense",
+                "localField": "expenseId",
+                "foreignField": "id",
+                "as": "expense"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$expense",
+                "preserveNullAndEmptyArrays": True
             }
         },
         {
             "$lookup": {
-                "from": "Currencies",
+                "from": "Currency",
                 "localField": "expense.currencyId",
                 "foreignField": "id",
-                "as": "expense.currency"
+                "as": "expenseCurrency"
             }
         },
         {
-            "$lookup": {
-                "from": "Workorders",
-                "localField": "workOrder.id",
-                "foreignField": "id",
-                "as": "workOrder"
+            "$unwind": {
+                "path": "$expenseCurrency",
+                "preserveNullAndEmptyArrays": True
+            }
+
+        },
+        {
+            "$project": {
+                "_id": 0
             }
         },
-        {"$sort": {"createdAt": -1}}
+        {
+            "$unset": ["account._id", "organization._id", "currency._id", "payment._id", "expense._id",
+                       "paymentCurrency._id", "expenseCurrency._id"]
+        },
+        {
+            "$sort": {
+                "createdAt": -1
+            }
+        }
     ]
 
-    transactions = DataAggregation("Transactions", pipeline)
+    transactions = DataAggregation("Transaction", pipeline)
 
     transformed_data = []
     for row in transactions:
         transformed_data.append(
             {
-                "id": row.id,
-                "description": row.expense.description
-                if row.expense
-                else row.payment.description,
-                "accountName": row.account.accountName,
-                "accountNumber": row.account.accountNumber,
-                "currency": row.account.organization.defaultCurrency.abr,
-                "currencySymbol": row.account.organization.defaultCurrency.symbol,
-                "debit": row.debit,
-                "credit": row.credit,
-                "originalCurrency": row.expense.currency.abr
-                if row.expense
-                else row.payment.currency.abr,
-                "originalCurrencySymbol": row.expense.currency.symbol
-                if row.expense
-                else row.payment.currency.symbol,
-                "transaction_date": row.createdAt,
+                "id": row["id"],
+                "description": row["expense"]["description"]
+                if row["expense"]
+                else row["payment"]["description"],
+                "accountName": row["account"]["accountName"],
+                "accountNumber": row["account"]["accountNumber"],
+                "currency": row["currency"]["abr"],
+                "currencySymbol": row["currency"]["symbol"],
+                "debit": row["debit"],
+                "credit": row["credit"],
+                "originalCurrency": row["expenseCurrency"]["abr"]
+                if row["expenseCurrency"]
+                else row["paymentCurrency"]["abr"],
+                "originalCurrencySymbol": row["expenseCurrency"]["symbol"]
+                if "expenseCurrency" in row and row["expenseCurrency"]
+                else row["paymentCurrency"]["symbol"],
+                "transaction_date": row["createdAt"],
             }
         )
     return transformed_data
 
 
-@router.post("/transactions/payment/invoice", tags=["transactions"])
+@router.post("/transactions/payment/invoice", tags=["transactions"],
+             dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def pay_invoice(payment_info: PayInvoice, requestor=Depends(validate_jwt_token)):
     # invoice = await prisma.invoice.find_unique(
     #     where={"id": payment_info.invoiceId},
@@ -167,7 +214,7 @@ async def pay_invoice(payment_info: PayInvoice, requestor=Depends(validate_jwt_t
         {"$match": {"id": payment_info.invoiceId}},
         {
             "$lookup": {
-                "from": "Workorders",
+                "from": "Workorder",
                 "localField": "WorkOrder.id",
                 "foreignField": "id",
                 "as": "workOrder"
@@ -207,57 +254,45 @@ async def pay_invoice(payment_info: PayInvoice, requestor=Depends(validate_jwt_t
     return {"status": "transaction recorded"}
 
 
-@router.post("/transactions/payment", tags=["transactions"])
+@router.post("/transactions/payment", tags=["transactions"],
+             dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def record_payment(payment_info: Payment, requestor=Depends(validate_jwt_token)):
     payment_data = payment_info.dict()
     del payment_data["accountId"]
-    # created_payment = await prisma.payment.create(data=payment_data)
-    created_payment = DataWriter("Payment", payment_data)
-    # await prisma.transaction.create(
-    #     data={
-    #         "debit": 0,
-    #         "credit": created_payment.amount * created_payment.exchangeRate,
-    #         "paymentId": created_payment.id,
-    #         "accountId": payment_info.accountId,
-    #     }
-    # )
-    DataWriter("Payment",
-               {
+
+    payment_data = PaymentDB(**payment_data)
+    DataWriter("Payment", payment_data.dict())
+    transaction_data = Transaction(**({
                    "debit": 0,
-                   "credit": created_payment.amount * created_payment.exchangeRate,
-                   "paymentId": created_payment.id,
+                   "credit": payment_data.amount * payment_data.exchangeRate,
+                   "paymentId": payment_data.id,
                    "accountId": payment_info.accountId,
-               }
-               )
+               }))
+    DataWriter("Transaction", transaction_data.dict())
     return {"status": "transaction recorded"}
 
 
-@router.post("/transactions/expense", tags=["transactions"])
+@router.post("/transactions/expense", tags=["transactions"],
+             dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def record_expense(expense_info: Payment, requestor=Depends(validate_jwt_token)):
     expense_data = expense_info.dict()
     del expense_data["accountId"]
-    # created_expense = await prisma.expense.create(data=expense_data)
-    created_expense = DataWriter("Expense", expense_data)
-    # await prisma.transaction.create(
-    #     data={
-    #         "debit": created_expense.amount * created_expense.exchangeRate,
-    #         "credit": 0,
-    #         "expenseId": created_expense.id,
-    #         "accountId": expense_info.accountId,
-    #     }
-    # )
-    DataWriter("Transaction",
-               {
-                   "debit": created_expense.amount * created_expense.exchangeRate,
+
+    expense_data = ExpenseDB(**expense_data)
+
+    DataWriter("Expense", expense_data.dict())
+    transaction_data = Transaction(**({
+                   "debit": expense_data.amount * expense_data.exchangeRate,
                    "credit": 0,
-                   "expenseId": created_expense.id,
+                   "expenseId": expense_data.id,
                    "accountId": expense_info.accountId,
-               }
-               )
+               }))
+    DataWriter("Transaction", transaction_data.dict())
     return {"status": "transaction recorded"}
 
 
-@router.post("/transactions/record", tags=["transactions"])
+@router.post("/transactions/record", tags=["transactions"],
+             dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def record_transaction(
         document: UploadFile = File(..., description="transaction document"),
         description: str = Form(..., description="Transaction Description"),
@@ -397,7 +432,8 @@ async def record_transaction(
     return data
 
 
-@router.get("/transactions/document/{transaction_id}", tags=["transactions"])
+@router.get("/transactions/document/{transaction_id}", tags=["transactions"],
+            dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def download_document(transaction_id: str, requestor=Depends(validate_jwt_token)):
     # transaction = await prisma.transaction.find_unique(
     #     where={"id": transaction_id},
@@ -411,46 +447,111 @@ async def download_document(transaction_id: str, requestor=Depends(validate_jwt_
     # )
 
     pipeline = [
-        {"$match": {"_id": transaction_id}},
+        {
+            "$match": {
+                "id": transaction_id
+            }
+        },
         {
             "$lookup": {
-                "from": "accounts",
+                "from": "AccountInfo",
                 "localField": "accountId",
-                "foreignField": "_id",
+                "foreignField": "id",
                 "as": "account"
             }
         },
         {
+            "$unwind": "$account"
+        },
+        {
             "$lookup": {
-                "from": "organizations",
+                "from": "Organization",
                 "localField": "account.orgId",
-                "foreignField": "_id",
+                "foreignField": "id",
                 "as": "organization"
             }
         },
         {
-            "$lookup": {
-                "from": "currencies",
-                "localField": "account.organization.defaultCurrencyId",
-                "foreignField": "_id",
-                "as": "defaultCurrency"
-            }
+            "$unwind": "$organization"
         },
         {
             "$lookup": {
-                "from": "currencies",
+                "from": "Currency",
+                "localField": "organization.defaultCurrencyId",
+                "foreignField": "id",
+                "as": "currency"
+            }
+        },
+        {
+            "$unwind": "$currency"
+        },
+        {
+            "$lookup": {
+                "from": "Payment",
+                "localField": "paymentId",
+                "foreignField": "id",
+                "as": "payment"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$payment",
+                "preserveNullAndEmptyArrays": True
+            }
+
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
                 "localField": "payment.currencyId",
-                "foreignField": "_id",
-                "as": "payment.currency"
+                "foreignField": "id",
+                "as": "paymentCurrency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$paymentCurrency",
+                "preserveNullAndEmptyArrays": True
+            }
+
+        },
+        {
+            "$lookup": {
+                "from": "Expense",
+                "localField": "expenseId",
+                "foreignField": "id",
+                "as": "expense"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$expense",
+                "preserveNullAndEmptyArrays": True
             }
         },
         {
             "$lookup": {
-                "from": "currencies",
+                "from": "Currency",
                 "localField": "expense.currencyId",
-                "foreignField": "_id",
-                "as": "expense.currency"
+                "foreignField": "id",
+                "as": "expenseCurrency"
             }
+        },
+        {
+            "$unwind": {
+                "path": "$expenseCurrency",
+                "preserveNullAndEmptyArrays": True
+            }
+
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["account._id", "organization._id", "currency._id", "payment._id", "expense._id",
+                       "paymentCurrency._id"]
         }
     ]
 
@@ -460,10 +561,12 @@ async def download_document(transaction_id: str, requestor=Depends(validate_jwt_
             status_code=HTTP_400_BAD_REQUEST, detail="Transaction not found"
         )
 
+    transaction = transaction[0]
+
     document_link = (
-        transaction.expense.docUrl
-        if transaction.expense
-        else transaction.payment.docUrl
+        transaction["expense"]["docUrl"]
+        if "expense" in transaction and transaction["expense"]
+        else transaction["payment"]["docUrl"]
     )
     upload_path = "/".join(document_link.split("/")[-3:])
     file_name = upload_path.split("/")[-1]
@@ -474,4 +577,3 @@ async def download_document(transaction_id: str, requestor=Depends(validate_jwt_
         media_type="application/octet-stream",
         headers={"Content-Disposition": f"attachment; filename={file_name}"},
     )
-

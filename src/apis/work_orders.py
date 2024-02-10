@@ -1,26 +1,23 @@
 import io
 import os
-import json
 from datetime import datetime, timedelta
-import pandas as pd
-from fastapi import APIRouter, Depends, File, Form, UploadFile, Response, Query
-
-from pydantic import BaseModel
 from typing import List, Optional
 
+import pandas as pd
+from fastapi import APIRouter, Depends, File, Form, UploadFile, Response, Query
+from pydantic import BaseModel
 from starlette.exceptions import HTTPException
 from starlette.status import HTTP_400_BAD_REQUEST
-from src.config.database import DataAggregation, DataWriter, DeleteData, MultiDataReader, SingleDataReader, UpdateWriter
 
-# from src.prisma import prisma
+from src.config.database import DataAggregation, DataWriter, DeleteData, MultiDataReader, SingleDataReader, UpdateWriter
 from src.config.settings import CUT_OFF_DATE
-from src.utils.permissions import validate_jwt_token
+from src.models.models import WorkOrder
 from src.models.scalar import WorkOrderType
-from src.utils.storage import write_to_blob, delete_blob, read_blob
-from src.utils.date_time import format_seconds_to_hr_mm, generate_calendar_table
-from src.utils.pdf_generation import generate_timesheet_pdf
-from src.utils.timesheet import generate_timesheet_calendar
 from src.utils.communication import send_timesheet
+from src.utils.date_time import format_seconds_to_hr_mm
+from src.utils.permissions import validate_jwt_token, OrgAdminAccess, JWTRequired, OrgStaffAccess
+from src.utils.storage import write_to_blob, delete_blob, read_blob
+from src.utils.timesheet import generate_timesheet_calendar
 
 router = APIRouter()
 
@@ -71,16 +68,8 @@ class TimeChargeMail(BaseModel):
     cc: List[str]
 
 
-@router.get("/workOrder", tags=["work_orders"])
+@router.get("/workOrder", tags=["work_orders"], dependencies=[Depends(JWTRequired), Depends(OrgStaffAccess)])
 async def read_work_orders(requestor=Depends(validate_jwt_token)):
-    # return await prisma.workorder.find_many(
-    #     include={
-    #         "client": {"include": {"organization": True}},
-    #         "invoices": True,
-    #         "changeability": True,
-    #         "currency": True,
-    #     }
-    # )
     pipeline = [
         {
             "$lookup": {
@@ -91,12 +80,18 @@ async def read_work_orders(requestor=Depends(validate_jwt_token)):
             }
         },
         {
+            "$unwind": "$client"
+        },
+        {
             "$lookup": {
                 "from": "Organization",
-                "localField": "Client.orgId",
+                "localField": "client.orgId",
                 "foreignField": "id",
                 "as": "organization"
             }
+        },
+        {
+            "$unwind": "$organization"
         },
         {
             "$lookup": {
@@ -104,6 +99,12 @@ async def read_work_orders(requestor=Depends(validate_jwt_token)):
                 "localField": "id",
                 "foreignField": "workOrderId",
                 "as": "invoices"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$invoices",
+                "preserveNullAndEmptyArrays": True
             }
         },
         {
@@ -132,7 +133,7 @@ async def read_work_orders(requestor=Depends(validate_jwt_token)):
     return DataAggregation("WorkOrder", pipeline)
 
 
-@router.post("/workOrder", tags=["work_orders"])
+@router.post("/workOrder", tags=["work_orders"], dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def create_work_order(
         document: UploadFile = File(..., description="WorkOrder Contract"),
         description: str = Form(..., description="Work order Description"),
@@ -156,7 +157,6 @@ async def create_work_order(
 
     content: bytes = io.BytesIO(document.file.read())
     extension = os.path.splitext(document.filename)[1]
-    # client = await prisma.client.find_unique(where={"id": work_order.clientId})
     client = SingleDataReader("Client", {"id": work_order.clientId})
     if not client:
         raise HTTPException(
@@ -165,29 +165,20 @@ async def create_work_order(
         )
     data = work_order.dict()
     data["type"] = data["type"].value
-    # created_work_order = await prisma.workorder.create(data=data)
-    created_work_order = DataWriter("WorkOrder", data)
+
+    created_work_order = WorkOrder(**data)
+    DataWriter("WorkOrder", created_work_order.dict())
     uploaded_path = write_to_blob(
         data=content, path=f"work-orders/{created_work_order.id}{extension}"
     )
     if uploaded_path:
-        # await prisma.workorder.update(
-        #     where={"id": created_work_order.id},
-        #     data={"docUrl": uploaded_path},
-        # )
         UpdateWriter("WorkOrder", {"id": created_work_order.id}, {"docUrl": uploaded_path})
-    # created_work_order = await prisma.workorder.find_unique(
-    #     where={"id": created_work_order.id},
-    #     include={
-    #         "currency": True,
-    #         "client": {"include": {"organization": True}},
-    #     },
-    # )
+
     pipeline = [
         {"$match": {"id": created_work_order.id}},
         {
             "$lookup": {
-                "from": "clients",
+                "from": "Client",
                 "localField": "clientId",
                 "foreignField": "id",
                 "as": "client"
@@ -198,41 +189,42 @@ async def create_work_order(
         },
         {
             "$lookup": {
-                "from": "organizations",
+                "from": "Organization",
                 "localField": "client.orgId",
                 "foreignField": "id",
                 "as": "organization"
             }
         },
         {
+            "$unwind": "$organization"
+        },
+        {
             "$lookup": {
-                "from": "currencies",
+                "from": "Currency",
                 "localField": "currencyId",
                 "foreignField": "id",
                 "as": "currency"
             }
+        },
+        {
+            "$unwind": "$currency"
+        },
+        {
+            "$unset": ["client._id", "organization._id", "currency._id"]
         }
     ]
     created_work_order = DataAggregation("WorkOrder", pipeline)
     return created_work_order
 
 
-@router.get("/workOrder/{work_order_id}", tags=["work_orders"])
+@router.get("/workOrder/{work_order_id}", tags=["work_orders"],
+            dependencies=[Depends(JWTRequired), Depends(OrgStaffAccess)])
 async def read_work_order(work_order_id: str, requestor=Depends(validate_jwt_token)):
-    # work_order = await prisma.workorder.find_unique(
-    #     where={"id": work_order_id},
-    #     include={
-    #         "invoices": True,
-    #         "changeability": True,
-    #         "currency": True,
-    #         "client": True,
-    #     },
-    # )
     pipeline = [
         {"$match": {"id": work_order_id}},
         {
             "$lookup": {
-                "from": "invoices",
+                "from": "Invoice",
                 "localField": "id",
                 "foreignField": "workOrderId",
                 "as": "invoices"
@@ -240,15 +232,15 @@ async def read_work_order(work_order_id: str, requestor=Depends(validate_jwt_tok
         },
         {
             "$lookup": {
-                "from": "changeabilities",
-                "localField": "changeabilityId",
+                "from": "Timesheet",
+                "localField": "workOrderId",
                 "foreignField": "id",
                 "as": "changeability"
             }
         },
         {
             "$lookup": {
-                "from": "currencies",
+                "from": "Currency",
                 "localField": "currencyId",
                 "foreignField": "id",
                 "as": "currency"
@@ -256,14 +248,43 @@ async def read_work_order(work_order_id: str, requestor=Depends(validate_jwt_tok
         },
         {
             "$lookup": {
-                "from": "clients",
+                "from": "Client",
                 "localField": "clientId",
                 "foreignField": "id",
                 "as": "client"
             }
+        },
+        {
+            "$unwind":
+                {
+                    "path": "$client",
+                    "preserveNullAndEmptyArrays": True
+                }
+        },
+        {
+            "$unwind":
+                {
+                    "path": "$currency",
+                    "preserveNullAndEmptyArrays": True
+                }
+        },
+        {
+            "$unwind": {
+                "path": "$changeability",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$invoices",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$unset": ["invoices._id", "changeability._id", "client._id", "currency._id"]
         }
     ]
-    work_order = DataAggregation("WorkdOrder", pipeline)
+    work_order = DataAggregation("WorkOrder", pipeline)
     if not work_order:
         raise HTTPException(
             detail="Invalid Work-Order id",
@@ -272,7 +293,8 @@ async def read_work_order(work_order_id: str, requestor=Depends(validate_jwt_tok
     return work_order
 
 
-@router.post("/workOrder/{work_order_id}", tags=["work_orders"])
+@router.post("/workOrder/{work_order_id}", tags=["work_orders"],
+             dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def update_work_order(
         work_order_id: str,
         update_info: UpdateWorkOrder,
@@ -412,27 +434,28 @@ async def update_work_order(
     return updated_work_order
 
 
-@router.delete("/workOrder/{work_order_id}", tags=["work_orders"])
+@router.delete("/workOrder/{work_order_id}", tags=["work_orders"],
+               dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def delete_work_order(
         work_order_id: str,
         requestor=Depends(validate_jwt_token)
 ):
-    # work_order = await prisma.workorder.find_unique(where={"id": work_order_id})
     work_order = SingleDataReader("WorkOrder", {"id": work_order_id})
     if not work_order:
         raise HTTPException(
             detail="Invalid Work-Order id",
             status_code=HTTP_400_BAD_REQUEST,
         )
+    work_order = WorkOrder(**work_order)
     if work_order.docUrl:
         uploaded_file_name = work_order.docUrl.split("/")[-1]
         delete_blob(path=f"work-orders/{uploaded_file_name}")
-    # await prisma.workorder.delete(where={"id": work_order_id})
-    await DeleteData("WorkOrder", {"id": work_order_id})
+    DeleteData("WorkOrder", {"id": work_order_id})
     return {"status": "acknowledged"}
 
 
-@router.get("/workOrder/charge/{work_order_id}", tags=["work_orders"])
+@router.get("/workOrder/charge/{work_order_id}", tags=["work_orders"],
+            dependencies=[Depends(JWTRequired), Depends(OrgStaffAccess)])
 async def week_summary(
         work_order_id: str,
         start_date: Optional[datetime] = Query(None),
@@ -566,7 +589,8 @@ async def week_summary(
     }
 
 
-@router.get("/workOrder/statistics/{work_order_id}", tags=["work_orders"])
+@router.get("/workOrder/statistics/{work_order_id}", tags=["work_orders"],
+            dependencies=[Depends(JWTRequired), Depends(OrgStaffAccess)])
 async def monthly_summary(
         work_order_id: str,
         date: datetime = Query(None),
@@ -652,7 +676,8 @@ async def monthly_summary(
     }
 
 
-@router.post("/workOrder/charge/{work_order_id}", tags=["work_orders"])
+@router.post("/workOrder/charge/{work_order_id}", tags=["work_orders"],
+             dependencies=[Depends(JWTRequired), Depends(OrgStaffAccess)])
 async def charge_time(
         time_to_charge: Timesheet,
         work_order_id: str,
@@ -679,7 +704,8 @@ async def charge_time(
     return time_charge
 
 
-@router.post("/workOrder/charge/edit/{timesheet_id}", tags=["work_orders"])
+@router.post("/workOrder/charge/edit/{timesheet_id}", tags=["work_orders"],
+             dependencies=[Depends(JWTRequired), Depends(OrgStaffAccess)])
 async def update_charged_time(
         update_info: UpdateTimesheet,
         timesheet_id: str,
@@ -703,7 +729,8 @@ async def update_charged_time(
     return timesheet
 
 
-@router.delete("/workOrder/charge/delete/{timesheet_id}", tags=["work_orders"])
+@router.delete("/workOrder/charge/delete/{timesheet_id}", tags=["work_orders"],
+               dependencies=[Depends(JWTRequired), Depends(OrgStaffAccess)])
 async def delete_charged_time(
         timesheet_id: str,
         requestor=Depends(validate_jwt_token)
@@ -722,7 +749,8 @@ async def delete_charged_time(
     return {"status": "acknowledged"}
 
 
-@router.get("/workOrder/document/{work_order_id}", tags=["work_orders"])
+@router.get("/workOrder/document/{work_order_id}", tags=["work_orders"],
+            dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def download_work_order_document(
         work_order_id: str, requestor=Depends(validate_jwt_token)
 ):
@@ -793,7 +821,8 @@ async def download_work_order_document(
     )
 
 
-@router.post("/workOrder/timesheet/report", tags=["work_orders"])
+@router.post("/workOrder/timesheet/report", tags=["work_orders"],
+             dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def download_work_order_document(
         details: TimeCharge,
         requestor=Depends(validate_jwt_token)
@@ -863,7 +892,8 @@ async def download_work_order_document(
     return Response(report, status_code=200, media_type="application/pdf")
 
 
-@router.post("/workOrder/timesheet/send", tags=["work_orders"])
+@router.post("/workOrder/timesheet/send", tags=["work_orders"],
+             dependencies=[Depends(JWTRequired), Depends(OrgAdminAccess)])
 async def download_work_order_document(
         details: TimeChargeMail,
         requestor=Depends(validate_jwt_token)

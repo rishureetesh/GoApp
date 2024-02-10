@@ -93,8 +93,8 @@ class WorkOrder(BaseModel):
     type: str
     rate: float
     currencyId: str
-    startDate: int
-    endDate: int
+    startDate: datetime
+    endDate: datetime
     docUrl: Optional[str]
     createdAt: int = Field(default_factory=get_utc_timestamp)
     updatedAt: int = Field(default_factory=get_utc_timestamp)
@@ -141,7 +141,7 @@ class InvoiceItem(BaseModel):
     updatedAt: int = Field(default_factory=get_utc_timestamp)
 
 
-class Payment(BaseModel):
+class PaymentDB(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4().hex))
     invoiceId: Optional[str]
     currencyId: str
@@ -153,7 +153,7 @@ class Payment(BaseModel):
     updatedAt: int = Field(default_factory=get_utc_timestamp)
 
 
-class Expense(BaseModel):
+class ExpenseDB(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4().hex))
     currencyId: str
     exchangeRate: Optional[float] = 1
