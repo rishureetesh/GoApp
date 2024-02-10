@@ -1,0 +1,234 @@
+generator client {
+  provider  = "prisma-client-py"
+  interface = "asyncio"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Gender {
+  male
+  female
+}
+
+enum WorkOrderType {
+  hourly
+  fixed
+}
+
+model User {
+  id             String        @id @default(cuid()) @db.VarChar(50)
+  organization   Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  orgId          String?
+  email          String        @unique @db.VarChar(250)
+  password       String?       @db.VarChar(255)
+  name           String?       @db.VarChar(255)
+  thumbURL       String?       @db.VarChar(255)
+  photoURL       String?       @db.VarChar(255)
+  birthDay       DateTime?
+  gender         Gender?
+  phone          String?       @unique @db.VarChar(255)
+  email_verified Boolean?
+  phone_verified Boolean?
+  active         Boolean       @default(false)
+  superUser      Boolean       @default(false)
+  staffUser      Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime?     @updatedAt
+
+  timesheets Timesheet[]
+}
+
+model Organization {
+  id                String    @id @default(cuid()) @db.VarChar(255)
+  name              String    @db.VarChar(255)
+  abr               String    @unique @db.VarChar(5)
+  registration      String    @unique @db.VarChar(50)
+  defaultCurrency   Currency  @relation(fields: [defaultCurrencyId], references: [id], onDelete: Cascade)
+  defaultCurrencyId String
+  addressLine1      String    @db.VarChar(50)
+  addressLine2      String    @db.VarChar(50)
+  addressLine3      String?   @db.VarChar(50)
+  city              String    @db.VarChar(25)
+  country           String    @db.VarChar(25)
+  zip               String    @db.VarChar(10)
+  active            Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime? @updatedAt
+
+  users    User[]
+  clients  Client[]
+  accounts AccountInfo[]
+}
+
+model Client {
+  id            String        @id @default(cuid()) @db.VarChar(255)
+  organization  Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId         String
+  name          String        @db.VarChar(255)
+  abr           String        @unique @db.VarChar(5)
+  registration  String        @unique @db.VarChar(50)
+  domestic      Boolean       @default(false)
+  internal      Boolean       @default(false)
+  contact_name  String        @db.VarChar(100)
+  contact_email String        @db.VarChar(100)
+  contact_phone String        @db.VarChar(100)
+  addressLine1  String        @db.VarChar(50)
+  addressLine2  String        @db.VarChar(50)
+  addressLine3  String?       @db.VarChar(50)
+  city          String        @db.VarChar(25)
+  country       String        @db.VarChar(25)
+  zip           String        @db.VarChar(10)
+  active        Boolean       @default(false)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime?     @updatedAt
+
+  workOrders WorkOrder[]
+}
+
+model WorkOrder {
+  id          String        @id @default(cuid()) @db.VarChar(255)
+  description String
+  client      Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId    String
+  type        WorkOrderType
+  rate        Float
+  currency    Currency      @relation(fields: [currencyId], references: [id], onDelete: Cascade)
+  currencyId  String
+  startDate   DateTime
+  endDate     DateTime
+  docUrl      String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime?     @updatedAt
+
+  invoices      Invoice[]
+  changeability Timesheet[]
+}
+
+model Timesheet {
+  id          String    @id @default(cuid()) @db.VarChar(255)
+  description String    @db.VarChar(255)
+  startTime   DateTime
+  endTime     DateTime
+  invoiced    Boolean   @default(false)
+  invoice     Invoice?  @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  invoiceId   String?
+  workOrder   WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  workOrderId String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime? @updatedAt
+
+  chargedBy   User?   @relation(fields: [chargedById], references: [id])
+  chargedById String?
+}
+
+model Invoice {
+  id                 String    @id @default(cuid()) @db.VarChar(255)
+  invoice_number     String    @db.VarChar(255)
+  workOrder          WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  workOrderId        String
+  currency           Currency  @relation(fields: [currencyId], references: [id], onDelete: Cascade)
+  currencyId         String
+  invoicePeriodStart DateTime
+  invoicePeriodEnd   DateTime
+  generatedOn        DateTime
+  dueBy              DateTime?
+  paidOn             DateTime?
+  docUrl             String?
+  amount             Float
+  tax                Float?    @default(0)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime? @updatedAt
+
+  items      InvoiceItem[]
+  payments   Payment[]
+  timesheets Timesheet[]
+}
+
+model InvoiceItem {
+  id          String    @id @default(cuid()) @db.VarChar(255)
+  invoice     Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId   String
+  description String    @db.VarChar(255)
+  quantity    String    @db.VarChar(255)
+  rate        Float
+  amount      Float
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime? @updatedAt
+}
+
+model Payment {
+  id           String    @id @default(cuid()) @db.VarChar(255)
+  invoice      Invoice?  @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  invoiceId    String?
+  currency     Currency  @relation(fields: [currencyId], references: [id], onDelete: Cascade)
+  currencyId   String
+  exchangeRate Float?    @default(1)
+  description  String    @db.VarChar(255)
+  docUrl       String?   @db.VarChar(255)
+  amount       Float
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime? @updatedAt
+
+  transactions Transaction[]
+}
+
+model Expense {
+  id           String    @id @default(cuid()) @db.VarChar(255)
+  currency     Currency  @relation(fields: [currencyId], references: [id], onDelete: Cascade)
+  currencyId   String
+  exchangeRate Float?    @default(1)
+  description  String    @db.VarChar(255)
+  docUrl       String?   @db.VarChar(255)
+  amount       Float
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime? @updatedAt
+
+  transactions Transaction[]
+}
+
+model Transaction {
+  id        String       @id @default(cuid()) @db.VarChar(255)
+  debit     Float
+  credit    Float
+  payment   Payment?     @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  paymentId String?
+  expense   Expense?     @relation(fields: [expenseId], references: [id], onDelete: SetNull)
+  expenseId String?
+  account   AccountInfo? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  accountId String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime?    @updatedAt
+}
+
+model AccountInfo {
+  id            String        @id @default(cuid()) @db.VarChar(255)
+  organization  Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId         String        @db.VarChar(255)
+  accountName   String        @db.VarChar(255)
+  accountNumber String        @db.VarChar(255)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime?     @updatedAt
+  transactions  Transaction[]
+
+  @@unique([orgId, accountName, accountNumber])
+}
+
+model Currency {
+  id        String    @id @default(cuid()) @db.VarChar(50)
+  name      String    @db.VarChar(50)
+  abr       String    @db.VarChar(3)
+  symbol    String    @db.VarChar(1)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime? @updatedAt
+
+  workOrders                  WorkOrder[]
+  payments                    Payment[]
+  expenses                    Expense[]
+  defaultCurrencyOrganization Organization[]
+  invoices                    Invoice[]
+
+  @@unique([name, abr, symbol])
+}

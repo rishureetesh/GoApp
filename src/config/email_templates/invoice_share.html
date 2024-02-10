@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+  </head>
+  <body>
+    <p>Dear {{workOrder.client.contact_name}},</p>
+
+    <p>
+      We hope this email finds you well. Attached, please find your invoice for
+      the services provided for the period of {{invoicePeriodStart.strftime('%B
+      %d, %Y')}} to {{invoicePeriodEnd.strftime('%B %d, %Y')}}. We appreciate
+      your continued partnership and look forward to serving you in the upcoming
+      months.
+    </p>
+
+    <h3>Invoice Details:</h3>
+    <ul>
+      <li>Invoice Number: {{invoice_number}}</li>
+      <li>Invoice Date: {{generatedOn.strftime('%B %d, %Y')}}</li>
+      <li>
+        Due Date: {{ dueBy.strftime('%B %d, %Y') if dueBy is not none else
+        'N/A'}}
+      </li>
+      <li>Amount: {{currency.symbol}} {{total | round(2)}}</li>
+      <li>Status: {{ status | capitalize }}</li>
+    </ul>
+
+    <p>
+      Please review the invoice and ensure that all the details are accurate. If
+      you have any questions or concerns regarding the invoice, please don't
+      hesitate to contact. Your prompt attention to this matter is greatly
+      appreciated.
+    </p>
+    <p>
+      Thank you for choosing our services. We value your business and are
+      committed to providing you with the best service possible. We look forward
+      to serving you again in the future.
+    </p>
+
+    <p>
+      Best regards,<br />
+      {{requestor.name}}<br />
+      {{workOrder.client.organization.name}}<br />
+      {{requestor.phone}}<br />
+      {{requestor.email}}
+    </p>
+  </body>
+</html>
