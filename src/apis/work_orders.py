@@ -11,7 +11,7 @@ from starlette.status import HTTP_400_BAD_REQUEST
 
 from src.config.database import DataAggregation, DataWriter, DeleteData, MultiDataReader, SingleDataReader, UpdateWriter
 from src.config.settings import CUT_OFF_DATE
-from src.models.models import WorkOrder
+from src.models.models import WorkOrder, TimesheetDB
 from src.models.scalar import WorkOrderType
 from src.utils.communication import send_timesheet
 from src.utils.date_time import format_seconds_to_hr_mm
@@ -87,11 +87,11 @@ async def read_work_orders(requestor=Depends(validate_jwt_token)):
                 "from": "Organization",
                 "localField": "client.orgId",
                 "foreignField": "id",
-                "as": "organization"
+                "as": "client.organization"
             }
         },
         {
-            "$unwind": "$organization"
+            "$unwind": "$client.organization"
         },
         {
             "$lookup": {
@@ -127,7 +127,12 @@ async def read_work_orders(requestor=Depends(validate_jwt_token)):
             "$unwind": "$currency"
         },
         {
-            "$unset": ["currency._id", "invoices._id", "changeability._id", "organization._id", "client._id"]
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["currency._id", "invoices._id", "changeability._id", "client.organization._id", "client._id"]
         }
     ]
     return DataAggregation("WorkOrder", pipeline)
@@ -192,11 +197,11 @@ async def create_work_order(
                 "from": "Organization",
                 "localField": "client.orgId",
                 "foreignField": "id",
-                "as": "organization"
+                "as": "client.organization"
             }
         },
         {
-            "$unwind": "$organization"
+            "$unwind": "$client.organization"
         },
         {
             "$lookup": {
@@ -210,11 +215,16 @@ async def create_work_order(
             "$unwind": "$currency"
         },
         {
-            "$unset": ["client._id", "organization._id", "currency._id"]
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["client._id", "client.organization._id", "currency._id"]
         }
     ]
     created_work_order = DataAggregation("WorkOrder", pipeline)
-    return created_work_order
+    return created_work_order[0]
 
 
 @router.get("/workOrder/{work_order_id}", tags=["work_orders"],
@@ -281,6 +291,11 @@ async def read_work_order(work_order_id: str, requestor=Depends(validate_jwt_tok
             }
         },
         {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
             "$unset": ["invoices._id", "changeability._id", "client._id", "currency._id"]
         }
     ]
@@ -290,7 +305,7 @@ async def read_work_order(work_order_id: str, requestor=Depends(validate_jwt_tok
             detail="Invalid Work-Order id",
             status_code=HTTP_400_BAD_REQUEST,
         )
-    return work_order
+    return work_order[0]
 
 
 @router.post("/workOrder/{work_order_id}", tags=["work_orders"],
@@ -300,7 +315,6 @@ async def update_work_order(
         update_info: UpdateWorkOrder,
         requestor=Depends(validate_jwt_token)
 ):
-    # work_order = await prisma.workorder.find_unique(where={"id": work_order_id})
     work_order = SingleDataReader("WorkOrder", {"id": work_order_id})
     if not work_order:
         raise HTTPException(
@@ -308,8 +322,9 @@ async def update_work_order(
             status_code=HTTP_400_BAD_REQUEST,
         )
 
+    work_order = WorkOrder(**work_order)
+
     if update_info.clientId and update_info.clientId != work_order.clientId:
-        # client = await prisma.client.find_unique(where={"id": update_info.clientId})
         client = SingleDataReader("Client", {"id": update_info.clientId})
         if not client:
             raise HTTPException(
@@ -318,9 +333,6 @@ async def update_work_order(
             )
 
     if update_info.currencyId and update_info.currencyId != work_order.currencyId:
-        # currency = await prisma.currency.find_unique(
-        #     where={"id": update_info.currencyId}
-        # )
         currency = SingleDataReader("Currency", {"id": update_info.currencyId})
         if not currency:
             raise HTTPException(
@@ -366,51 +378,15 @@ async def update_work_order(
     )
     update_info.docUrl = update_info.docUrl if update_info.docUrl else work_order.docUrl
 
-    # updated_work_order = await prisma.workorder.update(
-    #     where={"id": work_order_id}, data=update_info.dict()
-    # )
-    updated_work_order = UpdateWriter(
+    UpdateWriter(
         "WorkOrder", {"id": work_order_id}, update_info.dict()
     )
 
-    # updated_work_order = await prisma.workorder.find_unique(
-    #     where={"id": work_order_id},
-    #     include={
-    #         "invoices": True,
-    #         "changeability": True,
-    #         "currency": True,
-    #         "client": {"include": {"organization": True}},
-    #     },
-    # )
     pipeline = [
         {"$match": {"id": work_order_id}},
         {
             "$lookup": {
-                "from": "Invoices",
-                "localField": "id",
-                "foreignField": "workOrderId",
-                "as": "invoices"
-            }
-        },
-        {
-            "$lookup": {
-                "from": "Changeabilities",
-                "localField": "changeabilityId",
-                "foreignField": "id",
-                "as": "changeability"
-            }
-        },
-        {
-            "$lookup": {
-                "from": "Currencies",
-                "localField": "currencyId",
-                "foreignField": "id",
-                "as": "currency"
-            }
-        },
-        {
-            "$lookup": {
-                "from": "Clients",
+                "from": "Client",
                 "localField": "clientId",
                 "foreignField": "id",
                 "as": "client"
@@ -421,17 +397,61 @@ async def update_work_order(
         },
         {
             "$lookup": {
-                "from": "Organizations",
+                "from": "Organization",
                 "localField": "client.orgId",
                 "foreignField": "id",
                 "as": "client.organization"
             }
+        },
+        {
+            "$unwind": "$client.organization"
+        },
+        {
+            "$lookup": {
+                "from": "Invoice",
+                "localField": "id",
+                "foreignField": "workOrderId",
+                "as": "invoices"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$invoices",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Timesheet",
+                "localField": "id",
+                "foreignField": "workOrderId",
+                "as": "changeability"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "currencyId",
+                "foreignField": "id",
+                "as": "currency"
+            }
+        },
+        {
+            "$unwind": "$currency"
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["currency._id", "invoices._id", "changeability._id", "client.organization._id", "client._id"]
         }
     ]
 
     updated_work_order = DataAggregation("WorkOrder", pipeline)
 
-    return updated_work_order
+    return updated_work_order[0]
 
 
 @router.delete("/workOrder/{work_order_id}", tags=["work_orders"],
@@ -462,25 +482,15 @@ async def week_summary(
         end_date: Optional[datetime] = Query(None),
         requestor=Depends(validate_jwt_token)
 ):
-    # work_order = await prisma.workorder.find_unique(where={"id": work_order_id})
     work_order = SingleDataReader("WorkOrder", {"id": work_order_id})
     if not work_order:
         raise HTTPException(
             detail="Invalid Work-Order id",
             status_code=HTTP_400_BAD_REQUEST,
         )
+    timesheets = None
+    work_order = WorkOrder(**work_order)
     if start_date and end_date:
-        # timesheets = await prisma.timesheet.find_many(
-        #     where={
-        #         "workOrderId": work_order_id,
-        #         "startTime": {"gte": start_date},
-        #         "endTime": {"lte": end_date},
-        #         "chargedById": requestor.id,
-        #     },
-        #     order={
-        #         "startTime": "asc",
-        #     },
-        # )
         pipeline = [
             {
                 "$match": {
@@ -492,39 +502,45 @@ async def week_summary(
             },
             {
                 "$sort": {"startTime": 1}
+            },
+            {
+                "$project": {
+                    "_id": 0
+                }
             }
         ]
         timesheets = DataAggregation("Timesheet", pipeline)
     elif start_date and not end_date:
-        # timesheets = await prisma.timesheet.find_many(
-        #     where={"workOrderId": work_order_id, "startTime": {"gte": start_date}}
-        # )
         pipeline = [
             {
                 "$match": {
                     "workOrderId": work_order_id,
                     "startTime": {"$gte": start_date}
                 }
+            },
+            {
+                "$project": {
+                    "_id": 0
+                }
             }
         ]
         timesheets = DataAggregation("Timesheet", pipeline)
     elif not start_date and end_date:
-        # timesheets = await prisma.timesheet.find_many(
-        #     where={"workOrderId": work_order_id, "endTime": {"lte": end_date}}
-        # )
         pipeline = [
             {
                 "$match": {
                     "workOrderId": work_order_id,
                     "endTime": {"$lte": end_date}
                 }
+            },
+            {
+                "$project": {
+                    "_id": 0
+                }
             }
         ]
         timesheets = DataAggregation("Timesheet", pipeline)
     else:
-        # timesheets = await prisma.timesheet.find_many(
-        #     where={"workOrderId": work_order_id}
-        # )
         timesheets = MultiDataReader("Timesheet", {"workOrderId": work_order_id})
     data = []
     total_duration = 0
@@ -596,7 +612,6 @@ async def monthly_summary(
         date: datetime = Query(None),
         requestor=Depends(validate_jwt_token)
 ):
-    # work_order = await prisma.workorder.find_unique(where={"id": work_order_id})
     work_order = SingleDataReader("WorkOrder", {"id": work_order_id})
     if not work_order:
         raise HTTPException(
@@ -612,17 +627,6 @@ async def monthly_summary(
     end_of_month = next_month - timedelta(days=next_month.day)
     end_of_month = end_of_month.replace(hour=23, minute=59, second=59)
     current_date = start_of_month
-    # time_charges = await prisma.timesheet.find_many(
-    #     where={
-    #         "workOrderId": work_order_id,
-    #         "startTime": {"gte": start_of_month},
-    #         "endTime": {"lte": end_of_month},
-    #         "chargedById": requestor.id,
-    #     },
-    #     order={
-    #         "startTime": "asc",
-    #     },
-    # )
     pipeline = [
         {
             "$match": {
@@ -633,6 +637,11 @@ async def monthly_summary(
         },
         {
             "$sort": {"startTime": 1}
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
         }
     ]
 
@@ -683,8 +692,7 @@ async def charge_time(
         work_order_id: str,
         requestor=Depends(validate_jwt_token)
 ):
-    # work_order = await prisma.workorder.find_unique(where={"id": work_order_id})
-    work_order = MultiDataReader("WorkOrder", {"id": work_order_id})
+    work_order = SingleDataReader("WorkOrder", {"id": work_order_id})
     if not work_order:
         raise HTTPException(
             detail="Invalid Work-Order id",
@@ -699,9 +707,9 @@ async def charge_time(
     time_charge = time_to_charge.dict()
     time_charge["chargedById"] = requestor.id
     time_charge["workOrderId"] = work_order_id
-    # time_charge = await prisma.timesheet.create(data=time_charge)
-    time_charge = DataWriter("Timesheet", time_charge)
-    return time_charge
+    time_sheet = TimesheetDB(**time_charge)
+    DataWriter("Timesheet", time_sheet.dict())
+    return time_sheet
 
 
 @router.post("/workOrder/charge/edit/{timesheet_id}", tags=["work_orders"],
@@ -711,20 +719,17 @@ async def update_charged_time(
         timesheet_id: str,
         requestor=Depends(validate_jwt_token)
 ):
-    # timesheet = await prisma.timesheet.find_unique(where={"id": timesheet_id})
     timesheet = SingleDataReader("Timesheet", {"id": timesheet_id})
     if not timesheet:
         raise HTTPException(
             detail="Invalid Timesheet id",
             status_code=HTTP_400_BAD_REQUEST,
         )
+    timesheet = TimesheetDB(**timesheet)
     if update_info.description and update_info.description != timesheet.description:
-        # await prisma.timesheet.update(
-        #     where={"id": timesheet_id}, data={"description": update_info.description}
-        # )
         UpdateWriter("Timesheet", {"id": timesheet_id}, {"description": update_info.description})
-        # timesheet = await prisma.timesheet.find_unique(where={"id": timesheet_id})
         timesheet = SingleDataReader("Timesheet", {"id": timesheet_id})
+        timesheet = TimesheetDB(**timesheet)
 
     return timesheet
 
@@ -735,7 +740,6 @@ async def delete_charged_time(
         timesheet_id: str,
         requestor=Depends(validate_jwt_token)
 ):
-    # timesheet = await prisma.timesheet.find_unique(where={"id": timesheet_id})
     timesheet = SingleDataReader("Timesheet", {"id": timesheet_id})
     if not timesheet:
         raise HTTPException(
@@ -743,7 +747,6 @@ async def delete_charged_time(
             status_code=HTTP_400_BAD_REQUEST,
         )
 
-    # await prisma.timesheet.delete(where={"id": timesheet_id})
     DeleteData("Timesheet", {"id": timesheet_id})
 
     return {"status": "acknowledged"}
@@ -754,21 +757,12 @@ async def delete_charged_time(
 async def download_work_order_document(
         work_order_id: str, requestor=Depends(validate_jwt_token)
 ):
-    # work_order = await prisma.workorder.find_unique(
-    #     where={"id": work_order_id},
-    #     include={
-    #         "invoices": True,
-    #         "changeability": True,
-    #         "currency": True,
-    #         "client": True,
-    #     },
-    # )
 
     pipeline = [
         {"$match": {"id": work_order_id}},
         {
             "$lookup": {
-                "from": "Invoices",
+                "from": "Invoice",
                 "localField": "id",
                 "foreignField": "workOrderId",
                 "as": "invoices"
@@ -776,15 +770,15 @@ async def download_work_order_document(
         },
         {
             "$lookup": {
-                "from": "Changeabilities",
-                "localField": "changeabilityId",
+                "from": "Timesheet",
+                "localField": "workOrderId",
                 "foreignField": "id",
                 "as": "changeability"
             }
         },
         {
             "$lookup": {
-                "from": "Currencies",
+                "from": "Currency",
                 "localField": "currencyId",
                 "foreignField": "id",
                 "as": "currency"
@@ -792,20 +786,55 @@ async def download_work_order_document(
         },
         {
             "$lookup": {
-                "from": "Clients",
+                "from": "Client",
                 "localField": "clientId",
                 "foreignField": "id",
                 "as": "client"
             }
+        },
+        {
+            "$unwind":
+                {
+                    "path": "$client",
+                    "preserveNullAndEmptyArrays": True
+                }
+        },
+        {
+            "$unwind":
+                {
+                    "path": "$currency",
+                    "preserveNullAndEmptyArrays": True
+                }
+        },
+        {
+            "$unwind": {
+                "path": "$changeability",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$invoices",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["invoices._id", "changeability._id", "client._id", "currency._id"]
         }
     ]
 
-    work_order = DataAggregation("Workorder", pipeline)
+    work_order = DataAggregation("WorkOrder", pipeline)
     if not work_order:
         raise HTTPException(
             detail="Invalid Work-Order id",
             status_code=HTTP_400_BAD_REQUEST,
         )
+    work_order = WorkOrder(**work_order[0])
     if not work_order.docUrl:
         raise HTTPException(
             detail="No Document Uploaded",
@@ -827,15 +856,11 @@ async def download_work_order_document(
         details: TimeCharge,
         requestor=Depends(validate_jwt_token)
 ):
-    # work_order = await prisma.workorder.find_unique(
-    #     where={"id": details.work_order_id},
-    #     include={"client": {"include": {"organization": True}}},
-    # )
     pipeline = [
         {"$match": {"id": details.work_order_id}},
         {
             "$lookup": {
-                "from": "Clients",
+                "from": "Client",
                 "localField": "clientId",
                 "foreignField": "id",
                 "as": "client"
@@ -843,11 +868,33 @@ async def download_work_order_document(
         },
         {
             "$lookup": {
-                "from": "Organizations",
-                "localField": "Client.orgId",
+                "from": "Organization",
+                "localField": "client.orgId",
                 "foreignField": "id",
                 "as": "client.organization"
             }
+        },
+        {
+            "$unwind":
+                {
+                    "path": "$client",
+                    "preserveNullAndEmptyArrays": True
+                }
+        },
+        {
+            "$unwind":
+                {
+                    "path": "$client.organization",
+                    "preserveNullAndEmptyArrays": True
+                }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["client.organization._id", "client._id"]
         }
     ]
     work_order = DataAggregation("WorkOrder", pipeline)
@@ -856,16 +903,7 @@ async def download_work_order_document(
             detail="Invalid Work-Order id",
             status_code=HTTP_400_BAD_REQUEST,
         )
-    # time_charges = await prisma.timesheet.find_many(
-    #     where={
-    #         "workOrderId": work_order.id,
-    #         "startTime": {"gte": details.start},
-    #         "endTime": {"lte": details.end},
-    #     },
-    #     order={
-    #         "startTime": "asc",
-    #     },
-    # )
+    work_order = WorkOrder(**work_order[0])
 
     pipeline = [
         {
@@ -877,6 +915,11 @@ async def download_work_order_document(
         },
         {
             "$sort": {"startTime": 1}
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
         }
     ]
 
@@ -916,10 +959,32 @@ async def download_work_order_document(
         {
             "$lookup": {
                 "from": "Organizations",
-                "localField": "Client.orgId",
+                "localField": "client.orgId",
                 "foreignField": "id",
-                "as": "Client.organization"
+                "as": "client.organization"
             }
+        },
+        {
+            "$unwind":
+                {
+                    "path": "$client",
+                    "preserveNullAndEmptyArrays": True
+                }
+        },
+        {
+            "$unwind":
+                {
+                    "path": "$client.organization",
+                    "preserveNullAndEmptyArrays": True
+                }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["client.organization._id", "client._id"]
         }
     ]
     work_order = DataAggregation("WorkOrder", pipeline)
@@ -950,6 +1015,11 @@ async def download_work_order_document(
         {
             "$sort": {
                 "startTime": 1
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
             }
         }
     ]

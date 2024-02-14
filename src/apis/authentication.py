@@ -42,7 +42,7 @@ async def auth_login(signIn: UserSignIn, response: Response):
                     "from": "Accounts",
                     "localField": "Organization.id",
                     "foreignField": "orgId",
-                    "as": "accounts"
+                    "as": "organization.accounts"
                 }
             },
             {
@@ -53,7 +53,7 @@ async def auth_login(signIn: UserSignIn, response: Response):
             },
             {
                 "$unwind": {
-                    "path": "$accounts",
+                    "path": "$organization.accounts",
                     "preserveNullAndEmptyArrays": True
                 },
             },
@@ -63,7 +63,7 @@ async def auth_login(signIn: UserSignIn, response: Response):
                     "organization": {
                         "_id": 0
                     },
-                    "accounts": {
+                    "organization.accounts": {
                         "_id": 0
                     }
                 }

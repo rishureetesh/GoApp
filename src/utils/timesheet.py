@@ -7,7 +7,7 @@ from src.utils.pdf_generation import generate_timesheet_pdf
 
 
 def generate_timesheet_calendar(time_charges, details, work_order):
-    df = pd.DataFrame(list(map(lambda x: x.dict(), time_charges)))
+    df = pd.DataFrame(list(map(lambda x: x, time_charges)))
     df = df[["id", "description", "startTime", "endTime", "invoiced", "chargedById"]]
     duration = df["endTime"] - df["startTime"]
     df["duration"] = duration

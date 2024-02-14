@@ -100,11 +100,11 @@ class WorkOrder(BaseModel):
     updatedAt: int = Field(default_factory=get_utc_timestamp)
 
 
-class Timesheet(BaseModel):
+class TimesheetDB(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4().hex))
     description: str
-    startTime: int
-    endTime: int
+    startTime: datetime
+    endTime: datetime
     invoiced: bool = False
     invoiceId: Optional[str]
     workOrderId: str
@@ -118,11 +118,11 @@ class Invoice(BaseModel):
     invoice_number: str
     workOrderId: str
     currencyId: str
-    invoicePeriodStart: int
-    invoicePeriodEnd: int
-    generatedOn: int
-    dueBy: int
-    paidOn: int
+    invoicePeriodStart: datetime
+    invoicePeriodEnd: datetime
+    generatedOn: datetime
+    dueBy: Optional[datetime]
+    paidOn: Optional[datetime]
     docUrl: Optional[str]
     amount: float
     tax: Optional[float] = 0

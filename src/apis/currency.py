@@ -65,6 +65,11 @@ async def get_all_currencies(user=Depends(validate_jwt_token)):
             }
         },
         {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
             "$unset": ["defaultCurrencyOrganization._id", "expenses._id", "payments._id", "workOrders._id"]
         }
     ]
@@ -122,6 +127,11 @@ async def get_currency_by_id(currency_id: str, user=Depends(validate_jwt_token))
                 'localField': 'id',
                 'foreignField': 'defaultCurrencyId',
                 'as': 'defaultCurrencyOrganization'
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
             }
         },
         {
@@ -208,6 +218,11 @@ async def update_currency_by_id(
                 'localField': 'id',
                 'foreignField': 'defaultCurrencyId',
                 'as': 'defaultCurrencyOrganization'
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
             }
         },
         {

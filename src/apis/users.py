@@ -109,14 +109,21 @@ async def read_user_me(requestor: UserInDb = Depends(validate_jwt_token)):
                 "from": "AccountInfo",
                 "localField": "Organization.id",
                 "foreignField": "orgId",
-                "as": "accounts"
+                "as": "organization.accounts"
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
             }
         },
         {
             "$unwind": "$organization"
+        },{
+            "$unwind": "$organization.accounts"
         },
         {
-            "$unset": ["organization._id", "accounts._id"]
+            "$unset": ["organization._id", "organization.accounts._id"]
         }
     ]
     user = DataAggregation("User", pipeline)

@@ -11,6 +11,8 @@ from typing import List, Optional
 from starlette.exceptions import HTTPException
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND
 from src.config.database import CountDocuments, DataAggregation, DataWriter, DeleteData, SingleDataReader, UpdateWriter
+from src.models.models import WorkOrder, InvoiceItem, Invoice, Client, TimesheetDB, CurrencyDb, Organization, PaymentDB, \
+    Transaction
 from src.models.scalar import TransactionType
 # from src.prisma import prisma
 from src.config.settings import GST_PCT, TEMPLATE_ENV
@@ -54,113 +56,175 @@ class ShareInvoice(BaseModel):
     cc_list: List[str]
 
 
+class WorkOrderSetup(WorkOrder):
+    client: Client
+
+
+class ClientWithOrg(Client):
+    organization: Organization
+
+
+class WorkOrderWithCurrency(WorkOrder):
+    currency: CurrencyDb
+    client: ClientWithOrg
+
+
+class InvoiceAPI(Invoice, WorkOrderWithCurrency):
+    items: [InvoiceItem]
+    payments: PaymentDB
+    workOrder: WorkOrderWithCurrency
+
+
 @router.get("/invoice", tags=["invoice"])
 async def get_all_invoices(requestor=Depends(validate_jwt_token)):
-    # return await prisma.invoice.find_many(
-    #     where={"workOrder": {"client": {"organization": {"id": requestor.orgId}}}},
-    #     include={
-    #         "items": True,
-    #         "payments": True,
-    #         "workOrder": {
-    #             "include": {
-    #                 "client": {
-    #                     "include": {
-    #                         "organization": {
-    #                             "include": {"accounts": True, "defaultCurrency": True}
-    #                         }
-    #                     }
-    #                 },
-    #                 "currency": True,
-    #             }
-    #         },
-    #         "currency": True,
-    #     },
-    #     order={"createdAt": "desc"},
-    # )
-    
     pipeline = [
-            {
-                "$match": {
-                    "workOrder.client.organization.id": requestor.orgId
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "workorders",
-                    "localField": "workOrder.id",
-                    "foreignField": "id",
-                    "as": "workOrder"
-                }
-            },
-            {
-                "$unwind": "$workOrder"
-            },
-            {
-                "$lookup": {
-                    "from": "clients",
-                    "localField": "workOrder.client.id",
-                    "foreignField": "id",
-                    "as": "workOrder.client"
-                }
-            },
-            {
-                "$unwind": "$workOrder.client"
-            },
-            {
-                "$lookup": {
-                    "from": "organizations",
-                    "localField": "workOrder.client.organization.id",
-                    "foreignField": "id",
-                    "as": "workOrder.client.organization"
-                }
-            },
-            {
-                "$unwind": "$workOrder.client.organization"
-            },
-            {
-                "$lookup": {
-                    "from": "currencies",
-                    "localField": "workOrder.currency.id",
-                    "foreignField": "id",
-                    "as": "workOrder.currency"
-                }
-            },
-            {
-                "$unwind": "$workOrder.currency"
-            },
-            {
-                "$lookup": {
-                    "from": "currencies",
-                    "localField": "currency.id",
-                    "foreignField": "id",
-                    "as": "currency"
-                }
-            },
-            {
-                "$unwind": "$currency"
-            },
-            {
-                "$lookup": {
-                    "from": "items",
-                    "localField": "items.id",
-                    "foreignField": "id",
-                    "as": "items"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "payments",
-                    "localField": "payments.id",
-                    "foreignField": "id",
-                    "as": "payments"
-                }
-            },
-            {
-                "$sort": {
-                    "createdAt": -1
-                }
+        {
+            "$lookup": {
+                "from": "InvoiceItem",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "items"
             }
-        ]
+        },
+        {
+            "$lookup": {
+                "from": "Payment",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "payments"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "currencyId",
+                "foreignField": "id",
+                "as": "currency"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "WorkOrder",
+                "localField": "workOrderId",
+                "foreignField": "id",
+                "as": "workOrder"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Client",
+                "localField": "workOrder.clientId",
+                "foreignField": "id",
+                "as": "workOrder.client"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Organization",
+                "localField": "workOrder.client.orgId",
+                "foreignField": "id",
+                "as": "workOrder.client.organization"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client.organization",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$match": {
+                "workOrder.client.organization.id": requestor.orgId
+            }
+        },
+        {
+            "$lookup": {
+                "from": "AccountInfo",
+                "localField": "workOrder.client.organization.id",
+                "foreignField": "orgId",
+                "as": "workOrder.client.organization.accounts"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client.organization.accounts",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "workOrder.client.organization.defaultCurrencyId",
+                "foreignField": "id",
+                "as": "workOrder.client.organization.defaultCurrency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client.organization.defaultCurrency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "workOrder.currencyId",
+                "foreignField": "id",
+                "as": "workOrder.currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$payments",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$items",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["workOrder._id", "workOrder.currency._id", "currency._id", "items._id", "workOrder.client._id",
+                       "workOrder.client.organization._id", "workOrder.client.organization.accounts._id",
+                       "workOrder.client.organization.defaultCurrency._id", "payments._id"]
+        },
+        {
+            "$sort": {
+                "createdAt": -1
+            }
+        }
+    ]
     return DataAggregation("Invoice", pipeline)
 
 
@@ -174,145 +238,212 @@ async def get_invoice(invoice_id: str, requestor=Depends(validate_jwt_token)):
     #         "workOrder": {"include": {"client": True, "currency": True}},
     #     },
     # )
-    
+
     pipeline = [
-            {
-                "$match": {
-                    "id": invoice_id
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Items",
-                    "localField": "items.id",
-                    "foreignField": "id",
-                    "as": "items"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Payments",
-                    "localField": "payments.id",
-                    "foreignField": "id",
-                    "as": "payments"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Workorders",
-                    "localField": "workOrder.id",
-                    "foreignField": "id",
-                    "as": "workOrder"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Clients",
-                    "localField": "workOrder.client.id",
-                    "foreignField": "id",
-                    "as": "workOrder.client"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "currencies",
-                    "localField": "workOrder.currency.id",
-                    "foreignField": "id",
-                    "as": "workOrder.currency"
-                }
+        {
+            "$match": {
+                "id": invoice_id
             }
-        ]
-    
+        },
+        {
+            "$lookup": {
+                "from": "InvoiceItem",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "items"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$items",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Payment",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "payments"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$payments",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "WorkOrder",
+                "localField": "workOrderId",
+                "foreignField": "id",
+                "as": "workOrder"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Clients",
+                "localField": "workOrder.clientId",
+                "foreignField": "id",
+                "as": "workOrder.client"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "workOrder.currencyId",
+                "foreignField": "id",
+                "as": "workOrder.currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["workOrder._id", "workOrder.currency._id", "items._id", "workOrder.client._id",
+                       "payments._id"]
+        }
+    ]
+
     invoice = DataAggregation("Invoice", pipeline)
     if not invoice:
         raise HTTPException(
             detail="Invalid Invoice ID", status_code=HTTP_400_BAD_REQUEST
         )
-    return invoice
+    return invoice[0]
 
 
 @router.get("/invoice/search", tags=["invoice"])
 async def search_invoices(
-    text_to_search: str = Query(..., min_length=3, max_length=50),
-    requestor=Depends(validate_jwt_token)
+        text_to_search: str = Query(..., min_length=3, max_length=50),
+        requestor=Depends(validate_jwt_token)
 ):
-    # invoices = await prisma.invoice.find_many(
-    #     where={"invoice_number": {"contains": text_to_search}},
-    #     include={
-    #         "items": True,
-    #         "payments": True,
-    #         "workOrder": {"include": {"client": True, "currency": True}},
-    #     },
-    # )
-    
     pipeline = [
-            {
-                "$match": {
-                    "invoice_number": {"$regex": text_to_search, "$options": "i"}
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Items",
-                    "localField": "items.id",
-                    "foreignField": "id",
-                    "as": "items"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Payments",
-                    "localField": "payments.id",
-                    "foreignField": "id",
-                    "as": "payments"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Workorders",
-                    "localField": "workOrder.id",
-                    "foreignField": "id",
-                    "as": "workOrder"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Clients",
-                    "localField": "workOrder.client.id",
-                    "foreignField": "id",
-                    "as": "workOrder.client"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Currencies",
-                    "localField": "workOrder.currency.id",
-                    "foreignField": "id",
-                    "as": "workOrder.currency"
-                }
+        {
+            "$match": {
+                "invoice_number": {"$regex": text_to_search, "$options": "i"}
             }
-        ]
+        },
+        {
+            "$lookup": {
+                "from": "InvoiceItem",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "items"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$items",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Payment",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "payments"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$payments",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "WorkOrder",
+                "localField": "workOrderId",
+                "foreignField": "id",
+                "as": "workOrder"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Clients",
+                "localField": "workOrder.clientId",
+                "foreignField": "id",
+                "as": "workOrder.client"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "workOrder.currencyId",
+                "foreignField": "id",
+                "as": "workOrder.currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["workOrder._id", "workOrder.currency._id", "items._id", "workOrder.client._id",
+                       "payments._id"]
+        }
+    ]
     invoices = DataAggregation("Invoice", pipeline)
     return invoices
 
 
 @router.delete("/invoice/{invoice_id}", tags=["invoice"])
 async def delete_invoice(invoice_id: str, requestor=Depends(validate_jwt_token)):
-    # invoice = await prisma.invoice.find_unique(where={"id": invoice_id})
     invoice = SingleDataReader("Invoice", {"id": invoice_id})
     if not invoice:
         raise HTTPException(
             detail="Invalid Invoice ID", status_code=HTTP_400_BAD_REQUEST
         )
 
-    # await prisma.invoice.delete(where={"id": invoice_id})
     DeleteData("Invoice", {"id": invoice_id})
     return {"status": "acknowledged"}
 
 
 @router.post("/invoice/generate/items", tags=["invoice"])
 async def get_invoice_items(
-    invoice_details: InvoiceDetails, requestor=Depends(validate_jwt_token)
+        invoice_details: InvoiceDetails, requestor=Depends(validate_jwt_token)
 ):
     if invoice_details.start_date > invoice_details.end_date:
         raise HTTPException(
@@ -322,31 +453,40 @@ async def get_invoice_items(
     # work_order = await prisma.workorder.find_unique(
     #     where={"id": invoice_details.work_order_id}, include={"client": True}
     # )
-    
+
     pipeline = [
-            {
-                "$match": {
-                    "id": invoice_details.work_order_id
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Clients",
-                    "localField": "client.id",
-                    "foreignField": "id",
-                    "as": "client"
-                }
-            },
-            {
-                "$unwind": "$client"
+        {
+            "$match": {
+                "id": invoice_details.work_order_id
             }
-        ]
+        },
+        {
+            "$lookup": {
+                "from": "Client",
+                "localField": "clientId",
+                "foreignField": "id",
+                "as": "client"
+            }
+        },
+        {
+            "$unwind": "$client"
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["client._id"]
+        }
+    ]
     work_order = DataAggregation("WorkOrder", pipeline)
     if not work_order:
         raise HTTPException(
             detail="Invalid WorkOrder", status_code=HTTP_400_BAD_REQUEST
         )
 
+    work_order = WorkOrderSetup(**work_order[0])
     if invoice_details.end_date < work_order.startDate:
         raise HTTPException(
             detail="Invalid Invoice period. Falls outside the WorkOrder Duration",
@@ -369,21 +509,28 @@ async def get_invoice_items(
     #         "invoiced": False,
     #     }
     # )
-    
+
     pipeline = [
-            {
-                "$match": {
-                    "startTime": {"$gte": start_datetime, "$lte": end_datetime},
-                    "invoiced": False
-                }
+        {
+            "$match": {
+                "startTime": {"$gte": start_datetime, "$lte": end_datetime},
+                "invoiced": False
             }
-        ]
+        },
+        {
+            "$project":
+                {
+                    "_id": 0
+                }
+        }
+    ]
     time_charged = DataAggregation("Timesheet", pipeline)
     if len(time_charged) == 0:
         raise HTTPException(
             detail="No time charged for the given period",
             status_code=HTTP_400_BAD_REQUEST,
         )
+    time_charged = [TimesheetDB(**row) for row in time_charged]
     charge_df = pd.DataFrame(
         list(
             map(
@@ -445,62 +592,71 @@ async def get_invoice_items(
 
 @router.post("/invoice", tags=["invoice"])
 async def generate_invoice(
-    invoice: CreateInvoice, requestor=Depends(validate_jwt_token)
+        invoice: CreateInvoice, requestor=Depends(validate_jwt_token)
 ):
     # work_order = await prisma.workorder.find_unique(
     #     where={"id": invoice.workOrderId},
     #     include={"currency": True, "client": {"include": {"organization": True}}},
     # )
     pipeline = [
-            {
-                "$match": {
-                    "id": invoice.workOrderId
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Currencies",
-                    "localField": "currency.id",
-                    "foreignField": "id",
-                    "as": "currency"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Clients",
-                    "localField": "client.id",
-                    "foreignField": "id",
-                    "as": "client"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Organizations",
-                    "localField": "client.organization.id",
-                    "foreignField": "id",
-                    "as": "client.organization"
-                }
+        {
+            "$match": {
+                "id": invoice.workOrderId
             }
-        ]
-    
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "currencyId",
+                "foreignField": "id",
+                "as": "currency"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Client",
+                "localField": "clientId",
+                "foreignField": "id",
+                "as": "client"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Organization",
+                "localField": "client.orgId",
+                "foreignField": "id",
+                "as": "client.organization"
+            }
+        },
+        {
+            "$unwind": "$currency"
+        },
+        {
+            "$unwind": "$client.organization"
+        },
+        {
+            "$unwind": "$client"
+        },
+        {
+            "$unset": ["client._id", "client.organization._id", "currency._id"]
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        }
+    ]
+
     work_order = DataAggregation("WorkOrder", pipeline)
     if not work_order:
         raise HTTPException(
             detail="Invalid WorkOrder", status_code=HTTP_400_BAD_REQUEST
         )
+
+    work_order = WorkOrderWithCurrency(**work_order[0])
     timesheets = []
     if invoice.include_time_charges:
-        # timesheets = await prisma.timesheet.find_many(
-        #     where={
-        #         "workOrderId": work_order.id,
-        #         "startTime": {
-        #             "gte": invoice.invoicePeriodStart,
-        #             "lte": invoice.invoicePeriodEnd,
-        #         },
-        #         "invoiced": False,
-        #     }
-        # )
-        
+
         pipeline = [
             {
                 "$match": {
@@ -519,6 +675,7 @@ async def generate_invoice(
                 detail="No time charged for the given period",
                 status_code=HTTP_400_BAD_REQUEST,
             )
+        timesheets = [TimesheetDB(**row) for row in timesheets]
     total_amount = round(
         reduce(lambda amount, inv_det: amount + inv_det.amount, invoice.items, 0),
         2,
@@ -540,142 +697,150 @@ async def generate_invoice(
         else datetime.combine((datetime.now() + timedelta(days=7)), datetime.max.time())
     )
 
-    # invoice_number = await prisma.invoice.count()
     invoice_number = CountDocuments("Invoice")
-    # created_invoice = await prisma.invoice.create(
-    #     data={
-    #         "workOrderId": work_order.id,
-    #         "invoicePeriodStart": invoice.invoicePeriodStart,
-    #         "invoicePeriodEnd": invoice.invoicePeriodEnd,
-    #         "generatedOn": invoice.generatedOn,
-    #         "dueBy": invoice.dueBy,
-    #         "amount": total_amount,
-    #         "tax": round(((invoice.tax / 100) * total_amount), 2)
-    #         if work_order.client.domestic
-    #         else 0,
-    #         "invoice_number": f"{work_order.client.organization.abr}/{work_order.client.abr}/{datetime.strftime(datetime.now(), '%y%m%d')}/{invoice_number + 1}",
-    #         "currencyId": work_order.currency.id,
-    #     }
-    # )
-    
-    created_invoice = DataWriter("Invoice",
-            {
-                "workOrderId": work_order.id,
-                "invoicePeriodStart": invoice.invoicePeriodStart,
-                "invoicePeriodEnd": invoice.invoicePeriodEnd,
-                "generatedOn": invoice.generatedOn,
-                "dueBy": invoice.dueBy,
-                "amount": total_amount,
-                "tax": round(((invoice.tax / 100) * total_amount), 2)
-                if work_order.client.domestic
-                else 0,
-                "invoice_number": f"{work_order.client.organization.abr}/{work_order.client.abr}/{datetime.strftime(datetime.now(), '%y%m%d')}/{invoice_number + 1}",
-                "currencyId": work_order.currency.id,
-            }
-        )
+    created_invoice = Invoice(**{
+        "workOrderId": work_order.id,
+        "invoicePeriodStart": invoice.invoicePeriodStart,
+        "invoicePeriodEnd": invoice.invoicePeriodEnd,
+        "generatedOn": invoice.generatedOn,
+        "dueBy": invoice.dueBy,
+        "amount": total_amount,
+        "tax": round(((invoice.tax / 100) * total_amount), 2)
+        if work_order.client.domestic
+        else 0,
+        "invoice_number": f"{work_order.client.organization.abr}/{work_order.client.abr}/{datetime.strftime(datetime.now(), '%y%m%d')}/{invoice_number + 1}",
+        "currencyId": work_order.currency.id,
+    })
 
-    # await prisma.invoiceitem.create_many(
-    #     data=list(
-    #         map(
-    #             lambda item: {
-    #                 "invoiceId": created_invoice.id,
-    #                 "description": item.description,
-    #                 "quantity": item.quantity,
-    #                 "rate": item.rate,
-    #                 "amount": item.amount,
-    #             },
-    #             invoice.items,
-    #         )
-    #     )
-    # )
-    
+    created_invoice = DataWriter("Invoice", created_invoice.dict())
+
     DataWriter("InvoiceItem",
-            list(
-                map(
-                    lambda item: {
-                        "invoiceId": created_invoice.id,
-                        "description": item.description,
-                        "quantity": item.quantity,
-                        "rate": item.rate,
-                        "amount": item.amount,
-                    },
-                    invoice.items,
-                )
-            ),
-            True    
-    )
-    # created_invoice = await prisma.invoice.find_unique(
-    #     where={"id": created_invoice.id},
-    #     include={
-    #         "items": True,
-    #         "currency": True,
-    #         "workOrder": {
-    #             "include": {
-    #                 "currency": True,
-    #                 "client": {"include": {"organization": True}},
-    #             }
-    #         },
-    #         "payments": True,
-    #     },
-    # )
-    
+               list(
+                   map(
+                       lambda item: InvoiceItem(**{
+                           "invoiceId": created_invoice.id,
+                           "description": item.description,
+                           "quantity": item.quantity,
+                           "rate": item.rate,
+                           "amount": item.amount,
+                       }).dict(),
+                       invoice.items,
+                   )
+               ),
+               True
+               )
+
     pipeline = [
-            {
-                "$match": {
-                    "id": created_invoice.id
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Items",
-                    "localField": "id",
-                    "foreignField": "invoiceId",
-                    "as": "items"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "WorkOrders",
-                    "localField": "workOrderId",
-                    "foreignField": "id",
-                    "as": "workOrder"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Currencies",
-                    "localField": "currencyId",
-                    "foreignField": "id",
-                    "as": "currency"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Clients",
-                    "localField": "workOrder.clientId",
-                    "foreignField": "id",
-                    "as": "client"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Organizations",
-                    "localField": "client.organizationId",
-                    "foreignField": "id",
-                    "as": "organization"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "Payments",
-                    "localField": "id",
-                    "foreignField": "invoiceId",
-                    "as": "payments"
-                }
+        {
+            "$match": {
+                "id": created_invoice.id
             }
-        ]
-    
+        },
+        {
+            "$lookup": {
+                "from": "InvoiceItem",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "items"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Payment",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "payments"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$payments",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "WorkOrder",
+                "localField": "workOrderId",
+                "foreignField": "id",
+                "as": "workOrder"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Client",
+                "localField": "workOrder.clientId",
+                "foreignField": "id",
+                "as": "workOrder.client"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Organization",
+                "localField": "workOrder.client.orgId",
+                "foreignField": "id",
+                "as": "workOrder.client.organization"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client.organization",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "workOrder.currencyId",
+                "foreignField": "id",
+                "as": "workOrder.currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "currencyId",
+                "foreignField": "id",
+                "as": "currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["workOrder._id", "currency._id", "items._id", "workOrder.client._id",
+                       "workOrder.currency._id", "workOrder.client.organization._id", "payments._id"]
+        }
+    ]
+
     created_invoice = DataAggregation("Invoice", pipeline)
+    created_invoice = InvoiceAPI(**created_invoice[0])
 
     pdf_options = {
         "page-size": "A4",
@@ -685,7 +850,7 @@ async def generate_invoice(
         "margin-left": "0.05in",
         "encoding": "UTF-8",
         "footer-left": "#[page]",
-        "footer-right": f"Generated on: {created_invoice.createdAt.strftime('%d/%m/%Y %H:%M:%S +00:00/UTC')}",
+        # "footer-right": f"Generated on: {created_invoice.createdAt.strftime('%d/%m/%Y %H:%M:%S +00:00/UTC')}",
         "footer-font-size": "8",
     }
 
@@ -694,9 +859,10 @@ async def generate_invoice(
         pdf_options=pdf_options,
         template="templates/invoice.html",
     )
-    pdf_url = write_to_blob(
-        path=f"invoices/{created_invoice.invoice_number}.pdf", data=pdf
-    )
+    # pdf_url = write_to_blob(
+    #     path=f"invoices/{created_invoice.invoice_number}.pdf", data=pdf
+    # )
+    pdf_url = "test/"
     if not pdf_url:
         # await prisma.invoice.delete(where={"id": created_invoice.id})
         DeleteData("Invoice", {"id": created_invoice.id})
@@ -721,20 +887,18 @@ async def generate_invoice(
         #     },
         # )
         UpdateWriter("Timesheet",
-            {"_id": {"$in": list(map(lambda ts: ts["_id"], timesheets))}},
-            {"$set": {"invoiced": True, "invoiceId": created_invoice.id}}
-        )
+                     {"id": {"$in": list(map(lambda ts: ts.id, timesheets))}},
+                     {"$set": {"invoiced": True, "invoiceId": created_invoice.id}}
+                     )
     return Response(pdf, status_code=200, media_type="application/pdf")
 
 
 @router.get("/invoice/document/{invoice_id}", tags=["invoice"])
 async def get_invoice_document(invoice_id: str, requestor=Depends(validate_jwt_token)):
-    # invoice = await prisma.invoice.find_unique(
-    #     where={"id": invoice_id},
-    # )
     invoice = SingleDataReader("Invoice", {"id": invoice_id})
     if not invoice:
         raise HTTPException(detail="Invalid Invoice", status_code=HTTP_400_BAD_REQUEST)
+    invoice = Invoice(**invoice)
     if not invoice.docUrl:
         raise HTTPException(
             detail="Invoice document not found", status_code=HTTP_404_NOT_FOUND
@@ -749,88 +913,121 @@ async def get_invoice_document(invoice_id: str, requestor=Depends(validate_jwt_t
 
 @router.get("/invoice/cancel/{invoice_id}", tags=["invoice"])
 async def cancel_invoice(invoice_id: str, requestor=Depends(validate_jwt_token)):
-    # invoice = await prisma.invoice.find_unique(
-    #     where={"id": invoice_id},
-    #     include={
-    #         "items": True,
-    #         "currency": True,
-    #         "workOrder": {
-    #             "include": {
-    #                 "currency": True,
-    #                 "client": {"include": {"organization": True}},
-    #             }
-    #         },
-    #         "payments": True,
-    #     },
-    # )
-    
+
     pipeline = [
-            {
-                "$match": {
-                    "id": invoice_id
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "items",
-                    "localField": "id",
-                    "foreignField": "invoiceId",
-                    "as": "items"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "currencies",
-                    "localField": "currencyId",
-                    "foreignField": "id",
-                    "as": "currency"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "workOrders",
-                    "localField": "workOrderId",
-                    "foreignField": "id",
-                    "as": "workOrder"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "currencies",
-                    "localField": "workOrder.currencyId",
-                    "foreignField": "id",
-                    "as": "workOrder.currency"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "clients",
-                    "localField": "workOrder.clientId",
-                    "foreignField": "id",
-                    "as": "workOrder.client"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "organizations",
-                    "localField": "workOrder.client.organizationId",
-                    "foreignField": "id",
-                    "as": "workOrder.client.organization"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "payments",
-                    "localField": "id",
-                    "foreignField": "invoiceId",
-                    "as": "payments"
-                }
+        {
+            "$match": {
+                "id": invoice_id
             }
-        ]
-    
+        },
+        {
+            "$lookup": {
+                "from": "InvoiceItem",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "items"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Payment",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "payments"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$payments",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "WorkOrder",
+                "localField": "workOrderId",
+                "foreignField": "id",
+                "as": "workOrder"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Client",
+                "localField": "workOrder.clientId",
+                "foreignField": "id",
+                "as": "workOrder.client"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Organization",
+                "localField": "workOrder.client.orgId",
+                "foreignField": "id",
+                "as": "workOrder.client.organization"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client.organization",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "workOrder.currencyId",
+                "foreignField": "id",
+                "as": "workOrder.currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "currencyId",
+                "foreignField": "id",
+                "as": "currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["workOrder._id", "currency._id", "items._id", "workOrder.client._id",
+                       "workOrder.currency._id", "workOrder.client.organization._id", "payments._id"]
+        }
+    ]
+
     invoice = DataAggregation("Invoice", pipeline)
     if not invoice:
         raise HTTPException(detail="Invalid Invoice", status_code=HTTP_400_BAD_REQUEST)
+
+    invoice = InvoiceAPI(**invoice[0])
     if not invoice.docUrl:
         raise HTTPException(
             detail="Invoice document not found", status_code=HTTP_404_NOT_FOUND
@@ -856,10 +1053,6 @@ async def cancel_invoice(invoice_id: str, requestor=Depends(validate_jwt_token))
     )
     delete_blob(path=invoice.docUrl)
     write_to_blob(path=f"invoices/{invoice.invoice_number}.pdf", data=pdf)
-    # await prisma.invoice.update(
-    #     where={"id": invoice_id},
-    #     data={"dueBy": None},
-    # )
     UpdateWriter("Invoice", {"id": invoice_id}, {"dueBy": None})
     return Response(
         pdf,
@@ -870,93 +1063,125 @@ async def cancel_invoice(invoice_id: str, requestor=Depends(validate_jwt_token))
 
 @router.post("/invoice/pay/{invoice_id}", tags=["invoice"])
 async def pay_invoice(
-    invoice_id: str,
-    document: UploadFile = File(..., description="transaction document"),
-    exchange_rate: float = Form(..., description="Exchange Rate of the currency"),
-    account_id: str = Form(..., description="Account Id"),
-    requestor=Depends(validate_jwt_token)
+        invoice_id: str,
+        document: UploadFile = File(..., description="transaction document"),
+        exchange_rate: float = Form(..., description="Exchange Rate of the currency"),
+        account_id: str = Form(..., description="Account Id"),
+        requestor=Depends(validate_jwt_token)
 ):
-    # invoice = await prisma.invoice.find_unique(
-    #     where={"id": invoice_id},
-    #     include={
-    #         "items": True,
-    #         "currency": True,
-    #         "workOrder": {
-    #             "include": {
-    #                 "currency": True,
-    #                 "client": {"include": {"organization": True}},
-    #             }
-    #         },
-    #         "payments": True,
-    #     },
-    # )
     pipeline = [
-            {
-                "$match": {
-                    "id": invoice_id
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "items",
-                    "localField": "id",
-                    "foreignField": "invoiceId",
-                    "as": "items"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "currencies",
-                    "localField": "currencyId",
-                    "foreignField": "id",
-                    "as": "currency"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "workOrders",
-                    "localField": "workOrderId",
-                    "foreignField": "id",
-                    "as": "workOrder"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "currencies",
-                    "localField": "workOrder.currencyId",
-                    "foreignField": "id",
-                    "as": "workOrder.currency"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "clients",
-                    "localField": "workOrder.clientId",
-                    "foreignField": "id",
-                    "as": "workOrder.client"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "organizations",
-                    "localField": "workOrder.client.organizationId",
-                    "foreignField": "id",
-                    "as": "workOrder.client.organization"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "payments",
-                    "localField": "id",
-                    "foreignField": "invoiceId",
-                    "as": "payments"
-                }
+        {
+            "$match": {
+                "id": invoice_id
             }
-        ]
+        },
+        {
+            "$lookup": {
+                "from": "InvoiceItem",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "items"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Payment",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "payments"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$payments",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "WorkOrder",
+                "localField": "workOrderId",
+                "foreignField": "id",
+                "as": "workOrder"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Client",
+                "localField": "workOrder.clientId",
+                "foreignField": "id",
+                "as": "workOrder.client"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Organization",
+                "localField": "workOrder.client.orgId",
+                "foreignField": "id",
+                "as": "workOrder.client.organization"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client.organization",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "workOrder.currencyId",
+                "foreignField": "id",
+                "as": "workOrder.currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "currencyId",
+                "foreignField": "id",
+                "as": "currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["workOrder._id", "currency._id", "items._id", "workOrder.client._id",
+                       "workOrder.currency._id", "workOrder.client.organization._id", "payments._id"]
+        }
+    ]
     invoice = DataAggregation("Invoice", pipeline)
     if not invoice:
         raise HTTPException(detail="Invalid Invoice", status_code=HTTP_400_BAD_REQUEST)
 
+    invoice = InvoiceAPI(**invoice)
     if invoice.paidOn:
         raise HTTPException(
             detail="Invoice already paid", status_code=HTTP_400_BAD_REQUEST
@@ -971,141 +1196,148 @@ async def pay_invoice(
     content = io.BytesIO(document.file.read())
     extension = os.path.splitext(document.filename)[1]
 
-    # payment = await prisma.payment.create(
-    #     data={
-    #         "description": f"payment for invoice {invoice.invoice_number}",
-    #         "amount": invoice.amount + invoice.tax,
-    #         "currencyId": invoice.workOrder.currencyId,
-    #         "exchangeRate": exchange_rate,
-    #         "invoiceId": invoice.id,
-    #     }
-    # )
-    DataWriter(
-        "Payment",
-        {
+    payment = PaymentDB(**{
             "description": f"payment for invoice {invoice.invoice_number}",
             "amount": invoice.amount + invoice.tax,
             "currencyId": invoice.workOrder.currencyId,
             "exchangeRate": exchange_rate,
             "invoiceId": invoice.id,
-        }
-    )
+        })
+    DataWriter("Payment", payment.dict())
     pdf_url = write_to_blob(
         path=f"invoices/{TransactionType.payment.value}/{payment.id}{extension}",
         data=content,
     )
-    # payment = await prisma.payment.update(
-    #     where={"id": payment.id}, data={"docUrl": pdf_url}
-    # )
     payment = UpdateWriter(
         "Payment",
         {"id": payment.id},
         {"docUrl": pdf_url}
     )
-    # account = await prisma.accountinfo.find_unique(where={"id": account_id})
     account = SingleDataReader("AccountInfo", {"id": account_id})
-    # await prisma.transaction.create(
-    #     data={
-    #         "debit": 0,
-    #         "credit": payment.amount * payment.exchangeRate,
-    #         "paymentId": payment.id if payment else None,
-    #         "accountId": account.id,
-    #     }
-    # )
-    
+
     DataWriter(
         "Transaction",
-        {
+        Transaction(**{
             "debit": 0,
             "credit": payment.amount * payment.exchangeRate,
             "paymentId": payment.id if payment else None,
             "accountId": account.id,
-        }
+        })
     )
-    
-    # invoice = await prisma.invoice.update(
-    #     where={"id": invoice_id},
-    #     data={
-    #         "paidOn": datetime.now(),
-    #     },
-    #     include={
-    #         "items": True,
-    #         "currency": True,
-    #         "workOrder": {
-    #             "include": {
-    #                 "currency": True,
-    #                 "client": {"include": {"organization": True}},
-    #             }
-    #         },
-    #         "payments": True,
-    #     },
-    # )
-    
+
+    UpdateWriter("Invoice", {"id": invoice_id}, {"paidOn": datetime.now()})
+
     pipeline = [
-            {
-                "$match": {
-                    "id": invoice_id
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "items",
-                    "localField": "id",
-                    "foreignField": "invoiceId",
-                    "as": "items"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "currencies",
-                    "localField": "currencyId",
-                    "foreignField": "id",
-                    "as": "currency"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "workOrders",
-                    "localField": "workOrderId",
-                    "foreignField": "id",
-                    "as": "workOrder"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "currencies",
-                    "localField": "workOrder.currencyId",
-                    "foreignField": "id",
-                    "as": "workOrder.currency"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "clients",
-                    "localField": "workOrder.clientId",
-                    "foreignField": "id",
-                    "as": "workOrder.client"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "organizations",
-                    "localField": "workOrder.client.organizationId",
-                    "foreignField": "id",
-                    "as": "workOrder.client.organization"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "payments",
-                    "localField": "id",
-                    "foreignField": "invoiceId",
-                    "as": "payments"
-                }
+        {
+            "$match": {
+                "id": invoice_id
             }
-        ]
+        },
+        {
+            "$lookup": {
+                "from": "InvoiceItem",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "items"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Payment",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "payments"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$payments",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "WorkOrder",
+                "localField": "workOrderId",
+                "foreignField": "id",
+                "as": "workOrder"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Client",
+                "localField": "workOrder.clientId",
+                "foreignField": "id",
+                "as": "workOrder.client"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Organization",
+                "localField": "workOrder.client.orgId",
+                "foreignField": "id",
+                "as": "workOrder.client.organization"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client.organization",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "workOrder.currencyId",
+                "foreignField": "id",
+                "as": "workOrder.currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "currencyId",
+                "foreignField": "id",
+                "as": "currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["workOrder._id", "currency._id", "items._id", "workOrder.client._id",
+                       "workOrder.currency._id", "workOrder.client.organization._id", "payments._id"]
+        }
+    ]
     invoice = DataAggregation("Invoice", pipeline)
-    
+    invoice = InvoiceAPI(**invoice)
+
     pdf_options = {
         "page-size": "A4",
         "margin-top": "0.05in",
@@ -1134,91 +1366,124 @@ async def pay_invoice(
 
 @router.post("/invoice/share/{invoice_id}", tags=["invoice"])
 async def share_invoice(
-    invoice_id: str,
-    emails: ShareInvoice,
-    requestor=Depends(validate_jwt_token)
+        invoice_id: str,
+        emails: ShareInvoice,
+        requestor=Depends(validate_jwt_token)
 ):
-    # invoice = await prisma.invoice.find_unique(
-    #     where={"id": invoice_id},
-    #     include={
-    #         "items": True,
-    #         "currency": True,
-    #         "workOrder": {
-    #             "include": {
-    #                 "currency": True,
-    #                 "client": {"include": {"organization": True}},
-    #             }
-    #         },
-    #         "payments": True,
-    #     },
-    # )
-    
+
     pipeline = [
-            {
-                "$match": {
-                    "id": invoice_id
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "items",
-                    "localField": "id",
-                    "foreignField": "invoiceId",
-                    "as": "items"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "currencies",
-                    "localField": "currencyId",
-                    "foreignField": "id",
-                    "as": "currency"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "workOrders",
-                    "localField": "workOrderId",
-                    "foreignField": "id",
-                    "as": "workOrder"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "currencies",
-                    "localField": "workOrder.currencyId",
-                    "foreignField": "id",
-                    "as": "workOrder.currency"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "clients",
-                    "localField": "workOrder.clientId",
-                    "foreignField": "id",
-                    "as": "workOrder.client"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "organizations",
-                    "localField": "workOrder.client.organizationId",
-                    "foreignField": "id",
-                    "as": "workOrder.client.organization"
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "payments",
-                    "localField": "id",
-                    "foreignField": "invoiceId",
-                    "as": "payments"
-                }
+        {
+            "$match": {
+                "id": invoice_id
             }
-        ]
+        },
+        {
+            "$lookup": {
+                "from": "InvoiceItem",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "items"
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Payment",
+                "localField": "id",
+                "foreignField": "invoiceId",
+                "as": "payments"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$payments",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "WorkOrder",
+                "localField": "workOrderId",
+                "foreignField": "id",
+                "as": "workOrder"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Client",
+                "localField": "workOrder.clientId",
+                "foreignField": "id",
+                "as": "workOrder.client"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Organization",
+                "localField": "workOrder.client.orgId",
+                "foreignField": "id",
+                "as": "workOrder.client.organization"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.client.organization",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "workOrder.currencyId",
+                "foreignField": "id",
+                "as": "workOrder.currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$workOrder.currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$lookup": {
+                "from": "Currency",
+                "localField": "currencyId",
+                "foreignField": "id",
+                "as": "currency"
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$currency",
+                "preserveNullAndEmptyArrays": True
+            }
+        },
+        {
+            "$project": {
+                "_id": 0
+            }
+        },
+        {
+            "$unset": ["workOrder._id", "currency._id", "items._id", "workOrder.client._id",
+                       "workOrder.currency._id", "workOrder.client.organization._id", "payments._id"]
+        }
+    ]
     invoice = DataAggregation("Invoice", pipeline)
     if not invoice:
         raise HTTPException(detail="Invalid Invoice", status_code=HTTP_400_BAD_REQUEST)
+
+    invoice = InvoiceAPI(**invoice)
     if not invoice.docUrl:
         raise HTTPException(
             detail="Invoice document not found", status_code=HTTP_404_NOT_FOUND
